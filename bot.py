@@ -1,5 +1,6 @@
 import os
 import re
+import urllib.request
 from threading import Thread
 from flask import Flask
 from telegram import Update
@@ -13,6 +14,8 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether
 )
 from reportlab.pdfgen import canvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 # ==========================================
 # 1. Telegram Bot Token
@@ -20,25 +23,48 @@ from reportlab.pdfgen import canvas
 BOT_TOKEN = "8903776742:AAGeYC3UemM-JsuHZ2Af3dmTRAaC7THwcP0"
 
 # ==========================================
-# 2. Render Web Service Port Listener (Flask)
+# 2. Hindi Font Setup (Noto Sans Devanagari)
+# ==========================================
+FONT_PATH = "NotoSansDevanagari-Regular.ttf"
+FONT_BOLD_PATH = "NotoSansDevanagari-Bold.ttf"
+
+def ensure_hindi_fonts():
+    # Regular Hindi Font
+    if not os.path.exists(FONT_PATH):
+        url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansDevanagari/NotoSansDevanagari-Regular.ttf"
+        urllib.request.urlretrieve(url, FONT_PATH)
+    pdfmetrics.registerFont(TTFont('HindiFont', FONT_PATH))
+
+    # Bold Hindi Font
+    if not os.path.exists(FONT_BOLD_PATH):
+        url_bold = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansDevanagari/NotoSansDevanagari-Bold.ttf"
+        urllib.request.urlretrieve(url_bold, FONT_BOLD_PATH)
+    pdfmetrics.registerFont(TTFont('HindiFont-Bold', FONT_BOLD_PATH))
+
+try:
+    ensure_hindi_fonts()
+    print("Hindi Devanagari fonts registered successfully!")
+except Exception as e:
+    print(f"Font download error: {e}")
+
+# ==========================================
+# 3. Render Port Listener (Flask)
 # ==========================================
 web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "Bot is live and running perfectly on Render!"
+    return "Bot is live and running!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
-    print(f"Starting web server on port {port}...")
     web_app.run(host="0.0.0.0", port=port)
 
-# Background me Web server turant chalu karein
 server_thread = Thread(target=run_web, daemon=True)
 server_thread.start()
 
 # ==========================================
-# 3. Canvas for Auto Footer with Page Count
+# 4. Canvas for Auto Footer
 # ==========================================
 class NumberedCanvas(canvas.Canvas):
     def __init__(self, *args, **kwargs):
@@ -59,7 +85,7 @@ class NumberedCanvas(canvas.Canvas):
 
     def draw_footer(self, page_count):
         self.saveState()
-        self.setFont("Times-Roman", 11)
+        self.setFont("HindiFont", 11)
         self.setStrokeColor(colors.HexColor("#777777"))
         self.setLineWidth(0.8)
         self.line(36, 42, 595 - 36, 42)
@@ -70,7 +96,7 @@ class NumberedCanvas(canvas.Canvas):
         self.restoreState()
 
 # ==========================================
-# 4. DOCX Parser
+# 5. DOCX Parser
 # ==========================================
 def parse_docx(file_path):
     doc = Document(file_path)
@@ -103,7 +129,7 @@ def parse_docx(file_path):
     return questions
 
 # ==========================================
-# 5. Clean PDF Generator (ReportLab)
+# 6. PDF Generator with Devanagari Support
 # ==========================================
 def generate_pdf(questions, output_pdf):
     doc = SimpleDocTemplate(
@@ -120,58 +146,58 @@ def generate_pdf(questions, output_pdf):
     title_left = ParagraphStyle(
         'HeaderTitle',
         parent=styles['Normal'],
-        fontName='Times-Bold',
-        fontSize=13,
-        leading=16,
+        fontName='HindiFont-Bold',
+        fontSize=12,
+        leading=15,
         textColor=colors.HexColor('#B71C1C')
     )
     title_right = ParagraphStyle(
         'HeaderMarks',
         parent=styles['Normal'],
-        fontName='Times-Roman',
+        fontName='HindiFont',
         fontSize=11,
-        leading=16,
+        leading=15,
         alignment=2,
         textColor=colors.HexColor('#444444')
     )
     q_style = ParagraphStyle(
         'QuestionText',
         parent=styles['Normal'],
-        fontName='Times-Bold',
-        fontSize=11,
-        leading=15,
+        fontName='HindiFont-Bold',
+        fontSize=10.5,
+        leading=14.5,
         textColor=colors.black
     )
     opt_style = ParagraphStyle(
         'OptionText',
         parent=styles['Normal'],
-        fontName='Times-Roman',
-        fontSize=10.5,
+        fontName='HindiFont',
+        fontSize=10,
         leading=14,
         textColor=colors.black
     )
     ans_style = ParagraphStyle(
         'AnswerText',
         parent=styles['Normal'],
-        fontName='Times-Bold',
-        fontSize=11.5,
-        leading=15,
+        fontName='HindiFont-Bold',
+        fontSize=11,
+        leading=14,
         textColor=colors.HexColor('#2E7D32')
     )
     sol_style = ParagraphStyle(
         'SolutionText',
         parent=styles['Normal'],
-        fontName='Times-Roman',
-        fontSize=10.5,
-        leading=14.5,
+        fontName='HindiFont',
+        fontSize=10,
+        leading=14,
         textColor=colors.black
     )
     kp_style = ParagraphStyle(
         'KeyPointsText',
         parent=styles['Normal'],
-        fontName='Times-Roman',
-        fontSize=10,
-        leading=14,
+        fontName='HindiFont',
+        fontSize=9.5,
+        leading=13.5,
         textColor=colors.HexColor('#222222')
     )
     
@@ -191,13 +217,13 @@ def generate_pdf(questions, output_pdf):
         hdr_table.setStyle(TableStyle([
             ('LINEBEFORE', (0, 0), (0, -1), 4, colors.HexColor('#B71C1C')),
             ('LINEBELOW', (0, 0), (-1, -1), 1.5, colors.HexColor('#B71C1C')),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
             ('TOPPADDING', (0, 0), (-1, -1), 2),
             ('LEFTPADDING', (0, 0), (0, -1), 6),
             ('RIGHTPADDING', (-1, 0), (-1, -1), 2),
         ]))
         q_elements.append(hdr_table)
-        q_elements.append(Spacer(1, 6))
+        q_elements.append(Spacer(1, 5))
         
         # 2. Bilingual Two Columns
         left_flowables = [Paragraph(q['q_hi'], q_style), Spacer(1, 4)]
@@ -216,13 +242,13 @@ def generate_pdf(questions, output_pdf):
         bi_table.setStyle(TableStyle([
             ('LINEBEFORE', (1, 0), (1, -1), 1, colors.HexColor('#D0D0D0')),
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('RIGHTPADDING', (0, 0), (0, -1), 10),
-            ('LEFTPADDING', (1, 0), (1, -1), 10),
+            ('RIGHTPADDING', (0, 0), (0, -1), 8),
+            ('LEFTPADDING', (1, 0), (1, -1), 8),
             ('TOPPADDING', (0, 0), (-1, -1), 2),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
         ]))
         q_elements.append(bi_table)
-        q_elements.append(Spacer(1, 6))
+        q_elements.append(Spacer(1, 5))
         
         # 3. Answer Box
         ans_data = [[Paragraph(f"Answer: ({q['ans'].upper()})", ans_style)]]
@@ -243,8 +269,8 @@ def generate_pdf(questions, output_pdf):
         sol_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F9FBE7')),
             ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#CDDC39')),
-            ('TOPPADDING', (0, 0), (-1, -1), 5),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
             ('LEFTPADDING', (0, 0), (-1, -1), 8),
         ]))
         q_elements.append(sol_table)
@@ -257,8 +283,8 @@ def generate_pdf(questions, output_pdf):
         kp_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F5F5F5')),
             ('LINEBEFORE', (0, 0), (0, -1), 3.5, colors.HexColor('#1976D2')),
-            ('TOPPADDING', (0, 0), (-1, -1), 5),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
             ('LEFTPADDING', (0, 0), (-1, -1), 8),
         ]))
         q_elements.append(kp_table)
@@ -269,13 +295,10 @@ def generate_pdf(questions, output_pdf):
     doc.build(story, canvasmaker=NumberedCanvas)
 
 # ==========================================
-# 6. Telegram Handlers
+# 7. Telegram Handlers
 # ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Namaste! Apni .docx file upload karein.\n"
-        "Main turant 2-column bilingual layout me PDF bana kar bhej dunga."
-    )
+    await update.message.reply_text("Namaste! Apni .docx file upload karein, Hindi aur English dono clean PDF format me milenge.")
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc_file = update.message.document
@@ -308,15 +331,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(output_pdf): os.remove(output_pdf)
         await status_msg.delete()
 
-# ==========================================
-# 7. Main Polling Function
-# ==========================================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    
-    print("Telegram polling started...")
     app.run_polling()
 
 if __name__ == "__main__":
