@@ -1,11 +1,17 @@
 import os
 import re
+import subprocess
 from threading import Thread
 from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from docx import Document
-import pdfkit
+from docx.shared import Inches, Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.oxml import OxmlElement, parse_xml
+from docx.oxml.ns import qn, nsdecls
+from deep_translator import GoogleTranslator
 
 # ==========================================
 # 1. Telegram Bot Token
@@ -13,7 +19,7 @@ import pdfkit
 BOT_TOKEN = "8903776742:AAGeYC3UemM-JsuHZ2Af3dmTRAaC7THwcP0"
 
 # ==========================================
-# 2. Render Port Listener (Flask)
+# 2. Render Health-Check Server
 # ==========================================
 web_app = Flask(__name__)
 
@@ -28,16 +34,20 @@ def run_web():
 server_thread = Thread(target=run_web, daemon=True)
 server_thread.start()
 
+translator = GoogleTranslator(source='hi', target='en')
+
+def translate_safe(text):
+    if not text or not text.strip():
+        return ""
+    try:
+        # 4500 characters se bada text na bhejein
+        return translator.translate(text[:4500])
+    except Exception:
+        return text
+
 # ==========================================
 # 3. DOCX Parser
 # ==========================================
-def clean_text(txt):
-    if not txt:
-        return ""
-    txt = re.sub(r'[\r\t]', ' ', txt)
-    txt = re.sub(r' +', ' ', txt)
-    return txt.strip()
-
 def parse_docx(file_path):
     doc = Document(file_path)
     full_text = "\n".join([p.text.strip() for p in doc.paragraphs if p.text.strip()])
@@ -51,198 +61,198 @@ def parse_docx(file_path):
             
         q_data = {}
         
-        # Question text
+        # Question extraction
         q_match = re.search(r'(?:Question:\s*|\d+\s*/\s*प्रश्न\s*\d*\s*)(.*?)(?=\n\([a-d]\)|\nAnswer:)', block, re.DOTALL)
-        raw_q = q_match.group(1).strip() if q_match else ""
-        
-        # English translation extraction (agar slash ya bracket me ho)
-        q_data['q_hi'] = clean_text(raw_q)
-        q_data['q_en'] = clean_text(raw_q)  # Default fallback
+        q_data['q_hi'] = q_match.group(1).strip() if q_match else ""
         
         # Options
         opts = re.findall(r'\(([a-d])\)\s*(.*?)(?=\n\([a-d]\)|\nAnswer:|\Z)', block, re.DOTALL)
-        q_data['opts'] = {k.lower(): clean_text(v) for k, v in opts}
+        q_data['opts'] = {k.lower(): v.strip() for k, v in opts}
         
         # Answer
         ans_match = re.search(r'Answer:\s*([a-d])', block, re.IGNORECASE)
-        q_data['ans'] = ans_match.group(1).upper() if ans_match else ""
+        q_data['ans'] = ans_match.group(1).lower() if ans_match else ""
         
         # Solution
         sol_match = re.search(r'Solution:\s*(.*?)(?=\nKey Points:|\nPositive Marks:|\Z)', block, re.DOTALL)
-        q_data['sol'] = clean_text(sol_match.group(1)) if sol_match else ""
+        q_data['sol'] = sol_match.group(1).strip() if sol_match else ""
         
         # Key Points
         kp_match = re.search(r'Key Points:\s*(.*?)(?=\nPositive Marks:|\Z)', block, re.DOTALL)
-        q_data['kp'] = clean_text(kp_match.group(1)) if kp_match else ""
+        q_data['kp'] = kp_match.group(1).strip() if kp_match else ""
         
         questions.append(q_data)
         
     return questions
 
 # ==========================================
-# 4. WebKit-Based PDF Generator (Natural Devanagari)
+# 4. Word Document Builder
 # ==========================================
-def generate_pdf(questions, output_pdf):
-    html_content = """<!DOCTYPE html>
-<html lang="hi">
-<head>
-<meta charset="utf-8">
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Devanagari:wght@400;600;700&display=swap');
-  
-  body {
-    font-family: 'Noto Sans Devanagari', 'Times New Roman', serif;
-    font-size: 13pt;
-    line-height: 1.45;
-    color: #111;
-    margin: 0;
-    padding: 0;
-  }
-  .q-card {
-    page-break-inside: avoid;
-    margin-bottom: 22px;
-    border-bottom: 1px solid #e0e0e0;
-    padding-bottom: 14px;
-  }
-  .q-header {
-    border-left: 5px solid #b71c1c;
-    border-bottom: 1.5px solid #b71c1c;
-    padding: 4px 8px;
-    margin-bottom: 8px;
-  }
-  .q-header table {
-    width: 100%;
-    border-collapse: collapse;
-  }
-  .q-title {
-    color: #b71c1c;
-    font-weight: 700;
-    font-size: 13.5pt;
-    text-align: left;
-  }
-  .q-marks {
-    color: #555;
-    font-size: 11pt;
-    text-align: right;
-  }
-  .bilingual-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-bottom: 8px;
-  }
-  .col-hindi {
-    width: 50%;
-    vertical-align: top;
-    padding-right: 12px;
-  }
-  .col-eng {
-    width: 50%;
-    vertical-align: top;
-    padding-left: 12px;
-    border-left: 1px solid #ccc;
-  }
-  .q-text {
-    font-weight: 700;
-    margin-bottom: 6px;
-  }
-  .opt-line {
-    margin: 3px 0;
-  }
-  .opt-key {
-    font-weight: 700;
-    color: #0d47a1;
-  }
-  .ans-box {
-    background-color: #f1f8e9;
-    border: 1.5px solid #2e7d32;
-    padding: 6px 10px;
-    color: #2e7d32;
-    font-weight: 700;
-    margin-bottom: 6px;
-    border-radius: 3px;
-  }
-  .sol-box {
-    background-color: #f9fbe7;
-    border: 1px solid #cddc39;
-    padding: 6px 10px;
-    margin-bottom: 6px;
-    border-radius: 3px;
-  }
-  .kp-box {
-    background-color: #f5f5f5;
-    border-left: 4px solid #1976d2;
-    padding: 6px 10px;
-    border-radius: 2px;
-  }
-  .kp-title {
-    color: #1976d2;
-    font-weight: 700;
-    margin-bottom: 4px;
-  }
-</style>
-</head>
-<body>
-"""
+def set_cell_background(cell, fill_hex):
+    tcPr = cell._element.get_or_add_tcPr()
+    shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{fill_hex}"/>')
+    tcPr.append(shd)
 
-    for idx, q in enumerate(questions, start=1):
-        opts_left_html = ""
-        opts_right_html = ""
-        for key in ['a', 'b', 'c', 'd']:
-            val = q['opts'].get(key, '')
-            opts_left_html += f'<div class="opt-line"><span class="opt-key">({key})</span> {val}</div>'
-            opts_right_html += f'<div class="opt-line"><span class="opt-key">({key})</span> {val}</div>'
-            
-        kp_formatted = q['kp'].replace('\n', '<br>')
+def set_cell_margins(cell, top=100, bottom=100, left=150, right=150):
+    tcPr = cell._element.get_or_add_tcPr()
+    tcMar = parse_xml(f'<w:tcMar {nsdecls("w")}><w:top w:w="{top}" w:type="dxa"/><w:bottom w:w="{bottom}" w:type="dxa"/><w:left w:w="{left}" w:type="dxa"/><w:right w:w="{right}" w:type="dxa"/></w:tcMar>')
+    tcPr.append(tcMar)
+
+def create_formatted_docx(questions, output_docx):
+    doc = Document()
+    
+    # Page setup
+    for section in doc.sections:
+        section.top_margin = Inches(0.5)
+        section.bottom_margin = Inches(0.6)
+        section.left_margin = Inches(0.5)
+        section.right_margin = Inches(0.5)
         
-        html_content += f"""
-<div class="q-card">
-  <div class="q-header">
-    <table>
-      <tr>
-        <td class="q-title">Question {idx} / प्रश्न {idx}</td>
-        <td class="q-marks">Marks: +1, -0</td>
-      </tr>
-    </table>
-  </div>
-  <table class="bilingual-table">
-    <tr>
-      <td class="col-hindi">
-        <div class="q-text">{q['q_hi']}</div>
-        {opts_left_html}
-      </td>
-      <td class="col-eng">
-        <div class="q-text">{q['q_en']}</div>
-        {opts_right_html}
-      </td>
-    </tr>
-  </table>
-  <div class="ans-box">Answer: ({q['ans']})</div>
-  <div class="sol-box"><b>Solution:</b> {q['sol']}</div>
-  <div class="kp-box">
-    <div class="kp-title">Key Points:</div>
-    {kp_formatted}
-  </div>
-</div>
-"""
+        # Footer
+        footer = section.footer
+        f_p = footer.paragraphs[0]
+        f_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        f_run = f_p.add_run("Special Education Needs  |  Contact: 9828625119")
+        f_run.font.name = "Times New Roman"
+        f_run.font.size = Pt(11)
+        f_run.font.bold = True
+        f_run.font.color.rgb = RGBColor(80, 80, 80)
+        
+    for idx, q in enumerate(questions, start=1):
+        # 1. Header (Red Title + Marks)
+        h_table = doc.add_table(rows=1, cols=2)
+        h_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        h_table.autofit = False
+        h_table.columns[0].width = Inches(5.5)
+        h_table.columns[1].width = Inches(2.0)
+        
+        r0 = h_table.rows[0].cells[0].paragraphs[0].add_run(f"Question {idx} / प्रश्न {idx}")
+        r0.font.name = "Times New Roman"
+        r0.font.size = Pt(12)
+        r0.font.bold = True
+        r0.font.color.rgb = RGBColor(183, 28, 28)
+        
+        r1 = h_table.rows[0].cells[1].paragraphs[0].add_run("Marks: +1, -0")
+        r1.font.name = "Times New Roman"
+        r1.font.size = Pt(11)
+        r1.font.color.rgb = RGBColor(100, 100, 100)
+        h_table.rows[0].cells[1].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        
+        # Red Border Bottom
+        p_line = doc.add_paragraph()
+        p_line.paragraph_format.space_before = Pt(0)
+        p_line.paragraph_format.space_after = Pt(4)
+        run_line = p_line.add_run("―" * 58)
+        run_line.font.color.rgb = RGBColor(183, 28, 28)
+        run_line.font.bold = True
+        
+        # 2. Bilingual 2-Column Table (Left Hindi, Right English)
+        bi_table = doc.add_table(rows=1, cols=2)
+        bi_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        bi_table.autofit = False
+        bi_table.columns[0].width = Inches(3.7)
+        bi_table.columns[1].width = Inches(3.7)
+        
+        # Left (Hindi)
+        c_left = bi_table.rows[0].cells[0]
+        p_q_hi = c_left.paragraphs[0]
+        r_qh = p_q_hi.add_run(q['q_hi'])
+        r_qh.font.name = "Noto Sans Devanagari"
+        r_qh.font.size = Pt(11)
+        r_qh.font.bold = True
+        
+        for k in ['a', 'b', 'c', 'd']:
+            val = q['opts'].get(k, '')
+            p_opt = c_left.add_paragraph()
+            p_opt.paragraph_format.space_after = Pt(2)
+            r_k = p_opt.add_run(f"({k}) ")
+            r_k.font.bold = True
+            r_k.font.color.rgb = RGBColor(13, 71, 161)
+            r_v = p_opt.add_run(val)
+            r_v.font.name = "Noto Sans Devanagari"
+            r_v.font.size = Pt(10.5)
+            
+        # Right (English Translation)
+        c_right = bi_table.rows[0].cells[1]
+        p_q_en = c_right.paragraphs[0]
+        en_q_text = translate_safe(q['q_hi'])
+        r_qe = p_q_en.add_run(en_q_text)
+        r_qe.font.name = "Times New Roman"
+        r_qe.font.size = Pt(11)
+        r_qe.font.bold = True
+        
+        for k in ['a', 'b', 'c', 'd']:
+            val_hi = q['opts'].get(k, '')
+            val_en = translate_safe(val_hi)
+            p_opte = c_right.add_paragraph()
+            p_opte.paragraph_format.space_after = Pt(2)
+            r_ke = p_opte.add_run(f"({k}) ")
+            r_ke.font.bold = True
+            r_ke.font.color.rgb = RGBColor(13, 71, 161)
+            r_ve = p_opte.add_run(val_en)
+            r_ve.font.name = "Times New Roman"
+            r_ve.font.size = Pt(10.5)
+            
+        # 3. Answer Box (Green)
+        ans_table = doc.add_table(rows=1, cols=1)
+        ans_cell = ans_table.rows[0].cells[0]
+        set_cell_background(ans_cell, "F1F8E9")
+        set_cell_margins(ans_cell, top=80, bottom=80, left=120, right=120)
+        p_ans = ans_cell.paragraphs[0]
+        r_ans = p_ans.add_run(f"Answer: ({q['ans'].upper()})")
+        r_ans.font.name = "Times New Roman"
+        r_ans.font.size = Pt(11)
+        r_ans.font.bold = True
+        r_ans.font.color.rgb = RGBColor(46, 125, 50)
+        
+        # 4. Solution Box
+        sol_table = doc.add_table(rows=1, cols=1)
+        sol_cell = sol_table.rows[0].cells[0]
+        set_cell_background(sol_cell, "F9FBE7")
+        set_cell_margins(sol_cell, top=100, bottom=100, left=120, right=120)
+        p_sol = sol_cell.paragraphs[0]
+        r_sol_lbl = p_sol.add_run("Solution: ")
+        r_sol_lbl.font.bold = True
+        r_sol_txt = p_sol.add_run(q['sol'])
+        r_sol_txt.font.name = "Noto Sans Devanagari"
+        r_sol_txt.font.size = Pt(10)
+        
+        # 5. Key Points Box (Blue Accent)
+        kp_table = doc.add_table(rows=1, cols=1)
+        kp_cell = kp_table.rows[0].cells[0]
+        set_cell_background(kp_cell, "F5F5F5")
+        set_cell_margins(kp_cell, top=100, bottom=100, left=120, right=120)
+        p_kp = kp_cell.paragraphs[0]
+        r_kp_lbl = p_kp.add_run("Key Points:\n")
+        r_kp_lbl.font.bold = True
+        r_kp_lbl.font.color.rgb = RGBColor(25, 118, 210)
+        r_kp_txt = p_kp.add_run(q['kp'])
+        r_kp_txt.font.name = "Noto Sans Devanagari"
+        r_kp_txt.font.size = Pt(10)
+        
+        # Spacing between questions
+        p_space = doc.add_paragraph()
+        p_space.paragraph_format.space_after = Pt(12)
+        
+    doc.save(output_docx)
 
-    html_content += "</body></html>"
+def convert_docx_to_pdf(input_docx, output_pdf):
+    # LibreOffice headless command se 100% accurate PDF banti hai
+    cmd = [
+        "libreoffice",
+        "--headless",
+        "--convert-to",
+        "pdf",
+        input_docx,
+        "--outdir",
+        os.path.dirname(output_pdf) or "."
+    ]
+    subprocess.run(cmd, check=True)
     
-    options = {
-        'page-size': 'A4',
-        'margin-top': '12mm',
-        'margin-bottom': '18mm',
-        'margin-left': '12mm',
-        'margin-right': '12mm',
-        'encoding': "UTF-8",
-        'footer-line': '',
-        'footer-center': 'Special Education Needs | 9828625119 | Page [page] of [toPage]',
-        'footer-font-size': '10',
-        'footer-font-name': 'Noto Sans Devanagari',
-        'enable-local-file-access': None,
-        'quiet': ''
-    }
-    
-    pdfkit.from_string(html_content, output_pdf, options=options)
+    # LibreOffice input filename ke hisaab se pdf banata hai
+    temp_generated = input_docx.rsplit(".", 1)[0] + ".pdf"
+    if os.path.exists(temp_generated) and temp_generated != output_pdf:
+        os.rename(temp_generated, output_pdf)
 
 # ==========================================
 # 5. Telegram Handlers
@@ -250,7 +260,7 @@ def generate_pdf(questions, output_pdf):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Namaste! Apni .docx file upload karein.\n"
-        "Main turant clear Hindi fonts aur professional layout ke sath PDF generate karke bhej dunga."
+        "Main Hindi ka accurate English translation karke dono ko 2-column layout me clean PDF bana kar bhej dunga!"
     )
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -259,29 +269,32 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Kripya sirf .docx file upload karein.")
         return
 
-    status_msg = await update.message.reply_text("PDF taiyar ho rahi hai, kripya intezar karein...")
+    status_msg = await update.message.reply_text("Bilingual translation aur formatting chal rahi hai, kripya thoda intezar karein...")
     
     file_id = doc_file.file_id
     new_file = await context.bot.get_file(file_id)
     input_path = f"temp_{doc_file.file_name}"
+    temp_docx = input_path.replace(".docx", "_formatted.docx")
     output_pdf = input_path.replace(".docx", "_Formatted.pdf")
 
     await new_file.download_to_drive(input_path)
 
     try:
         questions = parse_docx(input_path)
-        generate_pdf(questions, output_pdf)
+        create_formatted_docx(questions, temp_docx)
+        convert_docx_to_pdf(temp_docx, output_pdf)
 
         await update.message.reply_document(
             document=open(output_pdf, "rb"),
-            filename="Inclusive_Education_Book.pdf",
-            caption="Aapki clean PDF taiyar hai!\nSpecial Education Needs | 9828625119"
+            filename="Inclusive_Education_Bilingual_Book.pdf",
+            caption="Aapki Bilingual PDF book taiyar hai!\nSpecial Education Needs | 9828625119"
         )
     except Exception as e:
         await update.message.reply_text(f"Error aaya: {str(e)}")
     finally:
-        if os.path.exists(input_path): os.remove(input_path)
-        if os.path.exists(output_pdf): os.remove(output_pdf)
+        for f in [input_path, temp_docx, output_pdf]:
+            if os.path.exists(f):
+                os.remove(f)
         await status_msg.delete()
 
 def main():
