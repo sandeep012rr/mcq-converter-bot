@@ -1,32 +1,34 @@
 import os
 import re
 import urllib.parse
-import subprocess
-import requests
+import urllib.request
 from threading import Thread
+import requests
 from flask import Flask
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+import telebot
 from docx import Document
-from docx.shared import Inches, Pt, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.oxml import parse_xml
-from docx.oxml.ns import nsdecls
 
-# ==========================================
-# 1. Telegram Bot Token
-# ==========================================
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether
+)
+from reportlab.pdfgen import canvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+# ===================================================
+# 1. Bot Token & Flask Web Service Setup
+# ===================================================
 BOT_TOKEN = "8903776742:AAGeYC3UemM-JsuHZ2Af3dmTRAaC7THwcP0"
+bot = telebot.TeleBot(BOT_TOKEN)
 
-# ==========================================
-# 2. Render Health Check Server
-# ==========================================
 web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "Bot is online!"
+    return "Special Education Bot is live and running!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -35,24 +37,47 @@ def run_web():
 server_thread = Thread(target=run_web, daemon=True)
 server_thread.start()
 
-# ==========================================
-# 3. High-Reliability Translation Engine
-# ==========================================
+# ===================================================
+# 2. Hindi Fonts Auto-Setup (No Broken Matras)
+# ===================================================
+FONT_REGULAR = "NotoSansDevanagari-Regular.ttf"
+FONT_BOLD = "NotoSansDevanagari-Bold.ttf"
+
+def load_hindi_fonts():
+    if not os.path.exists(FONT_REGULAR):
+        url = "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoSansDevanagari/NotoSansDevanagari-Regular.ttf"
+        urllib.request.urlretrieve(url, FONT_REGULAR)
+    pdfmetrics.registerFont(TTFont('DevaFont', FONT_REGULAR))
+
+    if not os.path.exists(FONT_BOLD):
+        url_bold = "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoSansDevanagari/NotoSansDevanagari-Bold.ttf"
+        urllib.request.urlretrieve(url_bold, FONT_BOLD)
+    pdfmetrics.registerFont(TTFont('DevaFont-Bold', FONT_BOLD))
+
+try:
+    load_hindi_fonts()
+    print("Devanagari fonts loaded successfully!")
+except Exception as e:
+    print(f"Font loading error: {e}")
+
+# ===================================================
+# 3. Robust Translation Engine (Hindi -> English)
+# ===================================================
 trans_cache = {}
 
 def translate_to_english(text):
     if not text or not text.strip():
         return ""
     
-    clean_in = text.strip()
-    if clean_in in trans_cache:
-        return trans_cache[clean_in]
-    
+    clean_text = text.strip()
+    if clean_text in trans_cache:
+        return trans_cache[clean_text]
+
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
     }
 
-    # Step 1: Google Translate Primary
+    # Primary: Google Translate Direct Web Endpoint
     try:
         url = "https://translate.googleapis.com/translate_a/single"
         params = {
@@ -60,34 +85,34 @@ def translate_to_english(text):
             "sl": "hi",
             "tl": "en",
             "dt": "t",
-            "q": clean_in
+            "q": clean_text
         }
-        resp = requests.get(url, params=params, headers=headers, timeout=8)
-        if resp.status_code == 200:
-            result = "".join([part[0] for part in resp.json()[0] if part and part[0]])
-            if result.strip():
-                trans_cache[clean_in] = result.strip()
-                return result.strip()
+        res = requests.get(url, params=params, headers=headers, timeout=6)
+        if res.status_code == 200:
+            translated = "".join([chunk[0] for chunk in res.json()[0] if chunk and chunk[0]])
+            if translated.strip():
+                trans_cache[clean_text] = translated.strip()
+                return translated.strip()
     except Exception:
         pass
 
-    # Step 2: Lingva Fallback Engine
+    # Secondary: MyMemory Free Translation API
     try:
-        url_lingva = f"https://lingva.ml/api/v1/hi/en/{urllib.parse.quote(clean_in)}"
-        resp2 = requests.get(url_lingva, headers=headers, timeout=8)
-        if resp2.status_code == 200:
-            res_txt = resp2.json().get("translation", "")
-            if res_txt.strip():
-                trans_cache[clean_in] = res_txt.strip()
-                return res_txt.strip()
+        url2 = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(clean_text)}&langpair=hi|en"
+        res2 = requests.get(url2, headers=headers, timeout=6)
+        if res2.status_code == 200:
+            tr_mem = res2.json().get("responseData", {}).get("translatedText", "")
+            if tr_mem.strip():
+                trans_cache[clean_text] = tr_mem.strip()
+                return tr_mem.strip()
     except Exception:
         pass
 
-    return clean_in
+    return clean_text
 
-# ==========================================
+# ===================================================
 # 4. DOCX Parser
-# ==========================================
+# ===================================================
 def parse_docx(file_path):
     doc = Document(file_path)
     full_text = "\n".join([p.text.strip() for p in doc.paragraphs if p.text.strip()])
@@ -108,7 +133,7 @@ def parse_docx(file_path):
         q_data['opts'] = {k.lower(): v.strip() for k, v in opts}
         
         ans_match = re.search(r'Answer:\s*([a-d])', block, re.IGNORECASE)
-        q_data['ans'] = ans_match.group(1).lower() if ans_match else ""
+        q_data['ans'] = ans_match.group(1).upper() if ans_match else ""
         
         sol_match = re.search(r'Solution:\s*(.*?)(?=\nKey Points:|\nPositive Marks:|\Z)', block, re.DOTALL)
         q_data['sol'] = sol_match.group(1).strip() if sol_match else ""
@@ -120,222 +145,274 @@ def parse_docx(file_path):
         
     return questions
 
-# ==========================================
-# 5. Formatted DOCX Generator
-# ==========================================
-def set_cell_background(cell, fill_hex):
-    tcPr = cell._element.get_or_add_tcPr()
-    shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{fill_hex}"/>')
-    tcPr.append(shd)
+# ===================================================
+# 5. Canvas for Page Counter & Footer Branding
+# ===================================================
+class NumberedCanvas(canvas.Canvas):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._saved_page_states = []
 
-def set_cell_margins(cell, top=100, bottom=100, left=150, right=150):
-    tcPr = cell._element.get_or_add_tcPr()
-    tcMar = parse_xml(f'<w:tcMar {nsdecls("w")}><w:top w:w="{top}" w:type="dxa"/><w:bottom w:w="{bottom}" w:type="dxa"/><w:left w:w="{left}" w:type="dxa"/><w:right w:w="{right}" w:type="dxa"/></w:tcMar>')
-    tcPr.append(tcMar)
+    def showPage(self):
+        self._saved_page_states.append(dict(self.__dict__))
+        self._startPage()
 
-def create_formatted_docx(questions, output_docx):
-    doc = Document()
+    def save(self):
+        num_pages = len(self._saved_page_states)
+        for state in self._saved_page_states:
+            self.__dict__.update(state)
+            self.draw_footer(num_pages)
+            super().showPage()
+        super().save()
+
+    def draw_footer(self, page_count):
+        self.saveState()
+        self.setFont("DevaFont", 10.5)
+        self.setStrokeColor(colors.HexColor("#777777"))
+        self.setLineWidth(0.8)
+        self.line(36, 42, 595 - 36, 42)
+        
+        footer_text = f"Special Education Needs | 9828625119 | Page {self._pageNumber} of {page_count}"
+        self.setFillColor(colors.HexColor("#222222"))
+        self.drawCentredString(595 / 2.0, 26, footer_text)
+        self.restoreState()
+
+# ===================================================
+# 6. Bilingual PDF Generator (Left Hindi, Right English)
+# ===================================================
+def generate_pdf(questions, output_pdf):
+    doc = SimpleDocTemplate(
+        output_pdf,
+        pagesize=A4,
+        leftMargin=32,
+        rightMargin=32,
+        topMargin=32,
+        bottomMargin=54
+    )
     
-    for section in doc.sections:
-        section.top_margin = Inches(0.5)
-        section.bottom_margin = Inches(0.6)
-        section.left_margin = Inches(0.5)
-        section.right_margin = Inches(0.5)
-        
-        footer = section.footer
-        f_p = footer.paragraphs[0]
-        f_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        f_run = f_p.add_run("Special Education Needs  |  Contact: 9828625119")
-        f_run.font.name = "Times New Roman"
-        f_run.font.size = Pt(11)
-        f_run.font.bold = True
-        f_run.font.color.rgb = RGBColor(80, 80, 80)
-        
+    styles = getSampleStyleSheet()
+    
+    title_left = ParagraphStyle(
+        'HeaderTitle',
+        parent=styles['Normal'],
+        fontName='DevaFont-Bold',
+        fontSize=12,
+        leading=15,
+        textColor=colors.HexColor('#B71C1C')
+    )
+    title_right = ParagraphStyle(
+        'HeaderMarks',
+        parent=styles['Normal'],
+        fontName='DevaFont',
+        fontSize=10.5,
+        leading=15,
+        alignment=2,
+        textColor=colors.HexColor('#444444')
+    )
+    q_hi_style = ParagraphStyle(
+        'QHi',
+        parent=styles['Normal'],
+        fontName='DevaFont-Bold',
+        fontSize=10,
+        leading=14,
+        textColor=colors.black
+    )
+    q_en_style = ParagraphStyle(
+        'QEn',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=10,
+        leading=14,
+        textColor=colors.black
+    )
+    opt_hi_style = ParagraphStyle(
+        'OptHi',
+        parent=styles['Normal'],
+        fontName='DevaFont',
+        fontSize=9.5,
+        leading=13.5,
+        textColor=colors.black
+    )
+    opt_en_style = ParagraphStyle(
+        'OptEn',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=9.5,
+        leading=13.5,
+        textColor=colors.black
+    )
+    ans_style = ParagraphStyle(
+        'Ans',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=11,
+        leading=14,
+        textColor=colors.HexColor('#2E7D32')
+    )
+    sol_style = ParagraphStyle(
+        'Sol',
+        parent=styles['Normal'],
+        fontName='DevaFont',
+        fontSize=9.5,
+        leading=13.5,
+        textColor=colors.black
+    )
+    kp_style = ParagraphStyle(
+        'KP',
+        parent=styles['Normal'],
+        fontName='DevaFont',
+        fontSize=9,
+        leading=13,
+        textColor=colors.HexColor('#222222')
+    )
+    
+    story = []
+    content_width = 595 - 64  # 531 pt
+    col_width = (content_width - 8) / 2.0  # ~261 pt
+    
     for idx, q in enumerate(questions, start=1):
-        # Header (Red Title + Marks)
-        h_table = doc.add_table(rows=1, cols=2)
-        h_table.alignment = WD_TABLE_ALIGNMENT.CENTER
-        h_table.autofit = False
-        h_table.columns[0].width = Inches(5.5)
-        h_table.columns[1].width = Inches(2.0)
+        q_elements = []
         
-        r0 = h_table.rows[0].cells[0].paragraphs[0].add_run(f"Question {idx} / प्रश्न {idx}")
-        r0.font.name = "Times New Roman"
-        r0.font.size = Pt(12)
-        r0.font.bold = True
-        r0.font.color.rgb = RGBColor(183, 28, 28)
+        # 1. Header (Red line + Marks)
+        hdr_table = Table([[
+            Paragraph(f"Question {idx} / प्रश्न {idx}", title_left),
+            Paragraph("Marks: +1, -0", title_right)
+        ]], colWidths=[col_width, col_width])
+        hdr_table.setStyle(TableStyle([
+            ('LINEBEFORE', (0, 0), (0, -1), 4, colors.HexColor('#B71C1C')),
+            ('LINEBELOW', (0, 0), (-1, -1), 1.5, colors.HexColor('#B71C1C')),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('TOPPADDING', (0, 0), (-1, -1), 2),
+            ('LEFTPADDING', (0, 0), (0, -1), 6),
+            ('RIGHTPADDING', (-1, 0), (-1, -1), 2),
+        ]))
+        q_elements.append(hdr_table)
+        q_elements.append(Spacer(1, 5))
         
-        r1 = h_table.rows[0].cells[1].paragraphs[0].add_run("Marks: +1, -0")
-        r1.font.name = "Times New Roman"
-        r1.font.size = Pt(11)
-        r1.font.color.rgb = RGBColor(100, 100, 100)
-        h_table.rows[0].cells[1].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        # 2. English Translation Process
+        en_question = translate_to_english(q['q_hi'])
         
-        p_line = doc.add_paragraph()
-        p_line.paragraph_format.space_before = Pt(0)
-        p_line.paragraph_format.space_after = Pt(4)
-        run_line = p_line.add_run("―" * 58)
-        run_line.font.color.rgb = RGBColor(183, 28, 28)
-        run_line.font.bold = True
-        
-        # Bilingual Table (Left: Hindi, Right: English)
-        bi_table = doc.add_table(rows=1, cols=2)
-        bi_table.alignment = WD_TABLE_ALIGNMENT.CENTER
-        bi_table.autofit = False
-        bi_table.columns[0].width = Inches(3.7)
-        bi_table.columns[1].width = Inches(3.7)
-        
-        # Left Side (Hindi)
-        c_left = bi_table.rows[0].cells[0]
-        p_q_hi = c_left.paragraphs[0]
-        r_qh = p_q_hi.add_run(q['q_hi'])
-        r_qh.font.name = "Noto Sans Devanagari"
-        r_qh.font.size = Pt(11)
-        r_qh.font.bold = True
-        
+        # Left Flowables (Hindi)
+        left_items = [Paragraph(q['q_hi'], q_hi_style), Spacer(1, 4)]
         for k in ['a', 'b', 'c', 'd']:
-            val = q['opts'].get(k, '')
-            p_opt = c_left.add_paragraph()
-            p_opt.paragraph_format.space_after = Pt(2)
-            r_k = p_opt.add_run(f"({k}) ")
-            r_k.font.bold = True
-            r_k.font.color.rgb = RGBColor(13, 71, 161)
-            r_v = p_opt.add_run(val)
-            r_v.font.name = "Noto Sans Devanagari"
-            r_v.font.size = Pt(10.5)
+            val_hi = q['opts'].get(k, '')
+            left_items.append(Paragraph(f"<b>({k})</b> {val_hi}", opt_hi_style))
+            left_items.append(Spacer(1, 2))
             
-        # Right Side (English Translated)
-        c_right = bi_table.rows[0].cells[1]
-        p_q_en = c_right.paragraphs[0]
-        en_q_text = translate_to_english(q['q_hi'])
-        r_qe = p_q_en.add_run(en_q_text)
-        r_qe.font.name = "Times New Roman"
-        r_qe.font.size = Pt(11)
-        r_qe.font.bold = True
-        
+        # Right Flowables (English)
+        right_items = [Paragraph(en_question, q_en_style), Spacer(1, 4)]
         for k in ['a', 'b', 'c', 'd']:
             val_hi = q['opts'].get(k, '')
             val_en = translate_to_english(val_hi)
-            p_opte = c_right.add_paragraph()
-            p_opte.paragraph_format.space_after = Pt(2)
-            r_ke = p_opte.add_run(f"({k}) ")
-            r_ke.font.bold = True
-            r_ke.font.color.rgb = RGBColor(13, 71, 161)
-            r_ve = p_opte.add_run(val_en)
-            r_ve.font.name = "Times New Roman"
-            r_ve.font.size = Pt(10.5)
+            right_items.append(Paragraph(f"<b>({k})</b> {val_en}", opt_en_style))
+            right_items.append(Spacer(1, 2))
             
-        # Answer Box
-        ans_table = doc.add_table(rows=1, cols=1)
-        ans_cell = ans_table.rows[0].cells[0]
-        set_cell_background(ans_cell, "F1F8E9")
-        set_cell_margins(ans_cell, top=80, bottom=80, left=120, right=120)
-        p_ans = ans_cell.paragraphs[0]
-        r_ans = p_ans.add_run(f"Answer: ({q['ans'].upper()})")
-        r_ans.font.name = "Times New Roman"
-        r_ans.font.size = Pt(11)
-        r_ans.font.bold = True
-        r_ans.font.color.rgb = RGBColor(46, 125, 50)
+        # 3. Two-Column Bilingual Table
+        bi_table = Table([[left_items, right_items]], colWidths=[col_width, col_width])
+        bi_table.setStyle(TableStyle([
+            ('LINEBEFORE', (1, 0), (1, -1), 1, colors.HexColor('#D0D0D0')),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('RIGHTPADDING', (0, 0), (0, -1), 8),
+            ('LEFTPADDING', (1, 0), (1, -1), 8),
+            ('TOPPADDING', (0, 0), (-1, -1), 2),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        q_elements.append(bi_table)
+        q_elements.append(Spacer(1, 5))
         
-        # Solution Box
-        sol_table = doc.add_table(rows=1, cols=1)
-        sol_cell = sol_table.rows[0].cells[0]
-        set_cell_background(sol_cell, "F9FBE7")
-        set_cell_margins(sol_cell, top=100, bottom=100, left=120, right=120)
-        p_sol = sol_cell.paragraphs[0]
-        r_sol_lbl = p_sol.add_run("Solution: ")
-        r_sol_lbl.font.bold = True
-        r_sol_txt = p_sol.add_run(q['sol'])
-        r_sol_txt.font.name = "Noto Sans Devanagari"
-        r_sol_txt.font.size = Pt(10)
+        # 4. Answer Box (Green)
+        ans_table = Table([[Paragraph(f"Answer: ({q['ans']})", ans_style)]], colWidths=[content_width])
+        ans_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F1F8E9')),
+            ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#2E7D32')),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+        ]))
+        q_elements.append(ans_table)
+        q_elements.append(Spacer(1, 4))
         
-        # Key Points Box
+        # 5. Solution Box
+        sol_table = Table([[Paragraph(f"<b>Solution:</b> {q['sol']}", sol_style)]], colWidths=[content_width])
+        sol_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F9FBE7')),
+            ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#CDDC39')),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+        ]))
+        q_elements.append(sol_table)
+        q_elements.append(Spacer(1, 4))
+        
+        # 6. Key Points Box
         if q['kp'].strip():
-            kp_table = doc.add_table(rows=1, cols=1)
-            kp_cell = kp_table.rows[0].cells[0]
-            set_cell_background(kp_cell, "F5F5F5")
-            set_cell_margins(kp_cell, top=100, bottom=100, left=120, right=120)
-            p_kp = kp_cell.paragraphs[0]
-            r_kp_lbl = p_kp.add_run("Key Points:\n")
-            r_kp_lbl.font.bold = True
-            r_kp_lbl.font.color.rgb = RGBColor(25, 118, 210)
-            r_kp_txt = p_kp.add_run(q['kp'])
-            r_kp_txt.font.name = "Noto Sans Devanagari"
-            r_kp_txt.font.size = Pt(10)
+            kp_text = q['kp'].replace('\n', '<br/>')
+            kp_table = Table([[Paragraph(f"<font color='#1976D2'><b>Key Points:</b></font><br/>{kp_text}", kp_style)]], colWidths=[content_width])
+            kp_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F5F5F5')),
+                ('LINEBEFORE', (0, 0), (0, -1), 3.5, colors.HexColor('#1976D2')),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ]))
+            q_elements.append(kp_table)
+            q_elements.append(Spacer(1, 12))
+            
+        story.append(KeepTogether(q_elements))
         
-        p_space = doc.add_paragraph()
-        p_space.paragraph_format.space_after = Pt(12)
-        
-    doc.save(output_docx)
+    doc.build(story, canvasmaker=NumberedCanvas)
 
-def convert_docx_to_pdf(input_docx, output_pdf):
-    out_dir = os.path.dirname(os.path.abspath(output_pdf)) or "."
-    cmd = [
-        "libreoffice",
-        "--headless",
-        "--convert-to",
-        "pdf",
-        os.path.abspath(input_docx),
-        "--outdir",
-        out_dir
-    ]
-    subprocess.run(cmd, check=True)
-    
-    generated = os.path.join(out_dir, os.path.splitext(os.path.basename(input_docx))[0] + ".pdf")
-    if os.path.exists(generated) and generated != os.path.abspath(output_pdf):
-        os.rename(generated, os.path.abspath(output_pdf))
-
-# ==========================================
-# 6. Telegram Handlers
-# ==========================================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Namaste! Apni .docx file upload karein.\n"
-        "Main Hindi ka accurate English translation karke 2-column bilingual layout me book PDF bana kar bhej dunga."
+# ===================================================
+# 7. Telegram Handlers (telebot)
+# ===================================================
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    bot.reply_to(
+        message,
+        "नमस्ते! अपनी .docx फ़ाइल अपलोड करें।\n"
+        "बॉट हिंदी का सटीक English Translation करके दो-कॉलम (Bilingual) लेआउट में PDF बुक बना देगा।"
     )
 
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    doc_file = update.message.document
-    if not doc_file.file_name.endswith('.docx'):
-        await update.message.reply_text("Kripya sirf .docx file upload karein.")
+@bot.message_handler(content_types=['document'])
+def handle_docs(message):
+    file_name = message.document.file_name
+    if not file_name.endswith('.docx'):
+        bot.reply_to(message, "कृपया सिर्फ़ .docx फ़ाइल भेजें।")
         return
 
-    status_msg = await update.message.reply_text("Bilingual English translation aur PDF conversion chalu hai...")
+    status_msg = bot.reply_to(message, "Bilingual Translation और PDF निर्माण जारी है, कृपया 1-2 मिनट प्रतीक्षा करें...")
     
-    file_id = doc_file.file_id
-    new_file = await context.bot.get_file(file_id)
-    input_path = f"temp_{doc_file.file_name}"
-    temp_docx = input_path.replace(".docx", "_formatted.docx")
-    output_pdf = input_path.replace(".docx", "_Formatted.pdf")
-
-    await new_file.download_to_drive(input_path)
-
+    file_info = bot.get_file(message.document.file_id)
+    downloaded_file = bot.download_file(file_info.file_path)
+    
+    input_path = f"temp_{file_name}"
+    output_pdf = input_path.replace(".docx", "_Bilingual_Book.pdf")
+    
+    with open(input_path, 'wb') as f:
+        f.write(downloaded_file)
+        
     try:
         questions = parse_docx(input_path)
-        create_formatted_docx(questions, temp_docx)
-        convert_docx_to_pdf(temp_docx, output_pdf)
-
-        await update.message.reply_document(
-            document=open(output_pdf, "rb"),
-            filename="Inclusive_Education_Bilingual_Book.pdf",
-            caption="Aapki Bilingual PDF book taiyar hai!\nSpecial Education Needs | 9828625119"
-        )
+        generate_pdf(questions, output_pdf)
+        
+        with open(output_pdf, 'rb') as pdf_file:
+            bot.send_document(
+                message.chat.id,
+                pdf_file,
+                caption="आपकी Bilingual PDF तैयार है!\nSpecial Education Needs | 9828625119"
+            )
     except Exception as e:
-        await update.message.reply_text(f"Error aaya: {str(e)}")
+        bot.reply_to(message, f"त्रुटि आई: {str(e)}")
     finally:
-        for f in [input_path, temp_docx, output_pdf]:
+        for f in [input_path, output_pdf]:
             if os.path.exists(f):
                 os.remove(f)
-        await status_msg.delete()
+        try:
+            bot.delete_message(message.chat.id, status_msg.message_id)
+        except Exception:
+            pass
 
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+if __name__ == '__main__':
+    print("Telegram Bot polling started...")
+    bot.infinity_polling(skip_pending=True)
     
-    print("Telegram polling started...")
-    app.run_polling(drop_pending_updates=True)
-
-if __name__ == "__main__":
-    main()
-                              
