@@ -19,7 +19,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
 # ===================================================
-# 1. Bot Token & Flask Web Service Setup
+# 1. Telegram Bot Token & Web Server
 # ===================================================
 BOT_TOKEN = "8903776742:AAGeYC3UemM-JsuHZ2Af3dmTRAaC7THwcP0"
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -38,7 +38,7 @@ server_thread = Thread(target=run_web, daemon=True)
 server_thread.start()
 
 # ===================================================
-# 2. Hindi Fonts Auto-Setup (No Broken Matras)
+# 2. Hindi Fonts Auto-Setup
 # ===================================================
 FONT_REGULAR = "NotoSansDevanagari-Regular.ttf"
 FONT_BOLD = "NotoSansDevanagari-Bold.ttf"
@@ -56,12 +56,12 @@ def load_hindi_fonts():
 
 try:
     load_hindi_fonts()
-    print("Devanagari fonts loaded successfully!")
+    print("Devanagari fonts loaded!")
 except Exception as e:
     print(f"Font loading error: {e}")
 
 # ===================================================
-# 3. Robust Translation Engine (Hindi -> English)
+# 3. Direct Google Translation Engine (No Block)
 # ===================================================
 trans_cache = {}
 
@@ -77,7 +77,6 @@ def translate_to_english(text):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
     }
 
-    # Primary: Google Translate Direct Web Endpoint
     try:
         url = "https://translate.googleapis.com/translate_a/single"
         params = {
@@ -87,7 +86,7 @@ def translate_to_english(text):
             "dt": "t",
             "q": clean_text
         }
-        res = requests.get(url, params=params, headers=headers, timeout=6)
+        res = requests.get(url, params=params, headers=headers, timeout=7)
         if res.status_code == 200:
             translated = "".join([chunk[0] for chunk in res.json()[0] if chunk and chunk[0]])
             if translated.strip():
@@ -96,10 +95,9 @@ def translate_to_english(text):
     except Exception:
         pass
 
-    # Secondary: MyMemory Free Translation API
     try:
         url2 = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(clean_text)}&langpair=hi|en"
-        res2 = requests.get(url2, headers=headers, timeout=6)
+        res2 = requests.get(url2, headers=headers, timeout=7)
         if res2.status_code == 200:
             tr_mem = res2.json().get("responseData", {}).get("translatedText", "")
             if tr_mem.strip():
@@ -146,7 +144,7 @@ def parse_docx(file_path):
     return questions
 
 # ===================================================
-# 5. Canvas for Page Counter & Footer Branding
+# 5. Canvas for Page Counter & Footer
 # ===================================================
 class NumberedCanvas(canvas.Canvas):
     def __init__(self, *args, **kwargs):
@@ -192,88 +190,24 @@ def generate_pdf(questions, output_pdf):
     
     styles = getSampleStyleSheet()
     
-    title_left = ParagraphStyle(
-        'HeaderTitle',
-        parent=styles['Normal'],
-        fontName='DevaFont-Bold',
-        fontSize=12,
-        leading=15,
-        textColor=colors.HexColor('#B71C1C')
-    )
-    title_right = ParagraphStyle(
-        'HeaderMarks',
-        parent=styles['Normal'],
-        fontName='DevaFont',
-        fontSize=10.5,
-        leading=15,
-        alignment=2,
-        textColor=colors.HexColor('#444444')
-    )
-    q_hi_style = ParagraphStyle(
-        'QHi',
-        parent=styles['Normal'],
-        fontName='DevaFont-Bold',
-        fontSize=10,
-        leading=14,
-        textColor=colors.black
-    )
-    q_en_style = ParagraphStyle(
-        'QEn',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=10,
-        leading=14,
-        textColor=colors.black
-    )
-    opt_hi_style = ParagraphStyle(
-        'OptHi',
-        parent=styles['Normal'],
-        fontName='DevaFont',
-        fontSize=9.5,
-        leading=13.5,
-        textColor=colors.black
-    )
-    opt_en_style = ParagraphStyle(
-        'OptEn',
-        parent=styles['Normal'],
-        fontName='Helvetica',
-        fontSize=9.5,
-        leading=13.5,
-        textColor=colors.black
-    )
-    ans_style = ParagraphStyle(
-        'Ans',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=11,
-        leading=14,
-        textColor=colors.HexColor('#2E7D32')
-    )
-    sol_style = ParagraphStyle(
-        'Sol',
-        parent=styles['Normal'],
-        fontName='DevaFont',
-        fontSize=9.5,
-        leading=13.5,
-        textColor=colors.black
-    )
-    kp_style = ParagraphStyle(
-        'KP',
-        parent=styles['Normal'],
-        fontName='DevaFont',
-        fontSize=9,
-        leading=13,
-        textColor=colors.HexColor('#222222')
-    )
+    title_left = ParagraphStyle('HL', parent=styles['Normal'], fontName='DevaFont-Bold', fontSize=12, leading=15, textColor=colors.HexColor('#B71C1C'))
+    title_right = ParagraphStyle('HR', parent=styles['Normal'], fontName='DevaFont', fontSize=10.5, leading=15, alignment=2, textColor=colors.HexColor('#444444'))
+    q_hi_style = ParagraphStyle('QH', parent=styles['Normal'], fontName='DevaFont-Bold', fontSize=10, leading=14, textColor=colors.black)
+    q_en_style = ParagraphStyle('QE', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=10, leading=14, textColor=colors.black)
+    opt_hi_style = ParagraphStyle('OH', parent=styles['Normal'], fontName='DevaFont', fontSize=9.5, leading=13.5, textColor=colors.black)
+    opt_en_style = ParagraphStyle('OE', parent=styles['Normal'], fontName='Helvetica', fontSize=9.5, leading=13.5, textColor=colors.black)
+    ans_style = ParagraphStyle('AN', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=11, leading=14, textColor=colors.HexColor('#2E7D32'))
+    sol_style = ParagraphStyle('SO', parent=styles['Normal'], fontName='DevaFont', fontSize=9.5, leading=13.5, textColor=colors.black)
+    kp_style = ParagraphStyle('KP', parent=styles['Normal'], fontName='DevaFont', fontSize=9, leading=13, textColor=colors.HexColor('#222222'))
     
     story = []
-    content_width = 595 - 64  # 531 pt
-    col_width = (content_width - 8) / 2.0  # ~261 pt
+    content_width = 595 - 64
+    col_width = (content_width - 8) / 2.0
     
     for idx, q in enumerate(questions, start=1):
         q_elements = []
         
-        # 1. Header (Red line + Marks)
+        # Header (Red Line)
         hdr_table = Table([[
             Paragraph(f"Question {idx} / प्रश्न {idx}", title_left),
             Paragraph("Marks: +1, -0", title_right)
@@ -289,17 +223,17 @@ def generate_pdf(questions, output_pdf):
         q_elements.append(hdr_table)
         q_elements.append(Spacer(1, 5))
         
-        # 2. English Translation Process
+        # Translation
         en_question = translate_to_english(q['q_hi'])
         
-        # Left Flowables (Hindi)
+        # Left Side (Hindi)
         left_items = [Paragraph(q['q_hi'], q_hi_style), Spacer(1, 4)]
         for k in ['a', 'b', 'c', 'd']:
             val_hi = q['opts'].get(k, '')
             left_items.append(Paragraph(f"<b>({k})</b> {val_hi}", opt_hi_style))
             left_items.append(Spacer(1, 2))
             
-        # Right Flowables (English)
+        # Right Side (English)
         right_items = [Paragraph(en_question, q_en_style), Spacer(1, 4)]
         for k in ['a', 'b', 'c', 'd']:
             val_hi = q['opts'].get(k, '')
@@ -307,7 +241,7 @@ def generate_pdf(questions, output_pdf):
             right_items.append(Paragraph(f"<b>({k})</b> {val_en}", opt_en_style))
             right_items.append(Spacer(1, 2))
             
-        # 3. Two-Column Bilingual Table
+        # 2-Column Table
         bi_table = Table([[left_items, right_items]], colWidths=[col_width, col_width])
         bi_table.setStyle(TableStyle([
             ('LINEBEFORE', (1, 0), (1, -1), 1, colors.HexColor('#D0D0D0')),
@@ -320,7 +254,7 @@ def generate_pdf(questions, output_pdf):
         q_elements.append(bi_table)
         q_elements.append(Spacer(1, 5))
         
-        # 4. Answer Box (Green)
+        # Answer Box
         ans_table = Table([[Paragraph(f"Answer: ({q['ans']})", ans_style)]], colWidths=[content_width])
         ans_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F1F8E9')),
@@ -332,7 +266,7 @@ def generate_pdf(questions, output_pdf):
         q_elements.append(ans_table)
         q_elements.append(Spacer(1, 4))
         
-        # 5. Solution Box
+        # Solution Box
         sol_table = Table([[Paragraph(f"<b>Solution:</b> {q['sol']}", sol_style)]], colWidths=[content_width])
         sol_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F9FBE7')),
@@ -344,7 +278,7 @@ def generate_pdf(questions, output_pdf):
         q_elements.append(sol_table)
         q_elements.append(Spacer(1, 4))
         
-        # 6. Key Points Box
+        # Key Points Box
         if q['kp'].strip():
             kp_text = q['kp'].replace('\n', '<br/>')
             kp_table = Table([[Paragraph(f"<font color='#1976D2'><b>Key Points:</b></font><br/>{kp_text}", kp_style)]], colWidths=[content_width])
@@ -363,24 +297,24 @@ def generate_pdf(questions, output_pdf):
     doc.build(story, canvasmaker=NumberedCanvas)
 
 # ===================================================
-# 7. Telegram Handlers (telebot)
+# 7. Telegram Handlers
 # ===================================================
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     bot.reply_to(
         message,
-        "नमस्ते! अपनी .docx फ़ाइल अपलोड करें।\n"
-        "बॉट हिंदी का सटीक English Translation करके दो-कॉलम (Bilingual) लेआउट में PDF बुक बना देगा।"
+        "Namaste! Apni .docx file upload karein.\n"
+        "Main Hindi ka accurate English translation karke 2-column bilingual layout me book PDF bana kar dunga."
     )
 
 @bot.message_handler(content_types=['document'])
 def handle_docs(message):
     file_name = message.document.file_name
     if not file_name.endswith('.docx'):
-        bot.reply_to(message, "कृपया सिर्फ़ .docx फ़ाइल भेजें।")
+        bot.reply_to(message, "Kripya sirf .docx file bhejein.")
         return
 
-    status_msg = bot.reply_to(message, "Bilingual Translation और PDF निर्माण जारी है, कृपया 1-2 मिनट प्रतीक्षा करें...")
+    status_msg = bot.reply_to(message, "Bilingual Translation aur PDF formation chalu hai...")
     
     file_info = bot.get_file(message.document.file_id)
     downloaded_file = bot.download_file(file_info.file_path)
@@ -399,10 +333,10 @@ def handle_docs(message):
             bot.send_document(
                 message.chat.id,
                 pdf_file,
-                caption="आपकी Bilingual PDF तैयार है!\nSpecial Education Needs | 9828625119"
+                caption="Aapki Bilingual PDF book taiyar hai!\nSpecial Education Needs | 9828625119"
             )
     except Exception as e:
-        bot.reply_to(message, f"त्रुटि आई: {str(e)}")
+        bot.reply_to(message, f"Error: {str(e)}")
     finally:
         for f in [input_path, output_pdf]:
             if os.path.exists(f):
@@ -413,6 +347,6 @@ def handle_docs(message):
             pass
 
 if __name__ == '__main__':
-    print("Telegram Bot polling started...")
+    print("Bot live ho gaya hai...")
     bot.infinity_polling(skip_pending=True)
     
