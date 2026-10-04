@@ -20,13 +20,13 @@ from docx.oxml.ns import nsdecls
 BOT_TOKEN = "8903776742:AAGeYC3UemM-JsuHZ2Af3dmTRAaC7THwcP0"
 
 # ==========================================
-# 2. Render Port Listener (Flask)
+# 2. Render Health Check Server
 # ==========================================
 web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "Bot is online and translating!"
+    return "Bot is online!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -36,7 +36,7 @@ server_thread = Thread(target=run_web, daemon=True)
 server_thread.start()
 
 # ==========================================
-# 3. Guaranteed Translation Engine (Multi-Fallback)
+# 3. High-Reliability Translation Engine
 # ==========================================
 trans_cache = {}
 
@@ -48,27 +48,38 @@ def translate_to_english(text):
     if clean_in in trans_cache:
         return trans_cache[clean_in]
     
-    # Method 1: Google Translate Direct Web API
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
+    # Step 1: Google Translate Primary
     try:
-        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=hi&tl=en&dt=t&q={urllib.parse.quote(clean_in)}"
-        resp = requests.get(url, timeout=6)
+        url = "https://translate.googleapis.com/translate_a/single"
+        params = {
+            "client": "gtx",
+            "sl": "hi",
+            "tl": "en",
+            "dt": "t",
+            "q": clean_in
+        }
+        resp = requests.get(url, params=params, headers=headers, timeout=8)
         if resp.status_code == 200:
-            result = "".join([part[0] for part in resp.json()[0] if part[0]])
+            result = "".join([part[0] for part in resp.json()[0] if part and part[0]])
             if result.strip():
                 trans_cache[clean_in] = result.strip()
                 return result.strip()
     except Exception:
         pass
 
-    # Method 2: MyMemory Translation API (Backup)
+    # Step 2: Lingva Fallback Engine
     try:
-        url2 = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(clean_in)}&langpair=hi|en"
-        resp2 = requests.get(url2, timeout=6)
+        url_lingva = f"https://lingva.ml/api/v1/hi/en/{urllib.parse.quote(clean_in)}"
+        resp2 = requests.get(url_lingva, headers=headers, timeout=8)
         if resp2.status_code == 200:
-            res2 = resp2.json().get("responseData", {}).get("translatedText", "")
-            if res2.strip():
-                trans_cache[clean_in] = res2.strip()
-                return res2.strip()
+            res_txt = resp2.json().get("translation", "")
+            if res_txt.strip():
+                trans_cache[clean_in] = res_txt.strip()
+                return res_txt.strip()
     except Exception:
         pass
 
@@ -110,7 +121,7 @@ def parse_docx(file_path):
     return questions
 
 # ==========================================
-# 5. Formatted Bilingual DOCX Builder
+# 5. Formatted DOCX Generator
 # ==========================================
 def set_cell_background(cell, fill_hex):
     tcPr = cell._element.get_or_add_tcPr()
@@ -167,14 +178,14 @@ def create_formatted_docx(questions, output_docx):
         run_line.font.color.rgb = RGBColor(183, 28, 28)
         run_line.font.bold = True
         
-        # Bilingual 2-Column Table (Left: Hindi, Right: English)
+        # Bilingual Table (Left: Hindi, Right: English)
         bi_table = doc.add_table(rows=1, cols=2)
         bi_table.alignment = WD_TABLE_ALIGNMENT.CENTER
         bi_table.autofit = False
         bi_table.columns[0].width = Inches(3.7)
         bi_table.columns[1].width = Inches(3.7)
         
-        # Left: Hindi Original
+        # Left Side (Hindi)
         c_left = bi_table.rows[0].cells[0]
         p_q_hi = c_left.paragraphs[0]
         r_qh = p_q_hi.add_run(q['q_hi'])
@@ -193,7 +204,7 @@ def create_formatted_docx(questions, output_docx):
             r_v.font.name = "Noto Sans Devanagari"
             r_v.font.size = Pt(10.5)
             
-        # Right: True English Translation
+        # Right Side (English Translated)
         c_right = bi_table.rows[0].cells[1]
         p_q_en = c_right.paragraphs[0]
         en_q_text = translate_to_english(q['q_hi'])
@@ -280,7 +291,7 @@ def convert_docx_to_pdf(input_docx, output_pdf):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Namaste! Apni .docx file upload karein.\n"
-        "Main Hindi ka accurate English translation karke 2-column bilingual layout me book PDF generate kar dunga."
+        "Main Hindi ka accurate English translation karke 2-column bilingual layout me book PDF bana kar bhej dunga."
     )
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -289,7 +300,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Kripya sirf .docx file upload karein.")
         return
 
-    status_msg = await update.message.reply_text("Bilingual English translation aur PDF formatting chal rahi hai, kripya intezar karein...")
+    status_msg = await update.message.reply_text("Bilingual English translation aur PDF conversion chalu hai...")
     
     file_id = doc_file.file_id
     new_file = await context.bot.get_file(file_id)
@@ -323,8 +334,8 @@ def main():
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
     print("Telegram polling started...")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
-        
+                              
