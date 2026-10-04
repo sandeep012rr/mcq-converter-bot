@@ -1,18 +1,37 @@
 import os
 import re
+from threading import Thread
+from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from docx import Document
 from weasyprint import HTML
 
-# Aapka Telegram Bot Token
+# ==========================================
+# 1. Aapka Telegram Bot Token
+# ==========================================
 BOT_TOKEN = "8903776742:AAGeYC3UemM-JsuHZ2Af3dmTRAaC7THwcP0"
 
+# ==========================================
+# 2. Render Web Service Health-Check Server
+# ==========================================
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "Bot is running perfectly on Render!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port)
+
+# ==========================================
+# 3. DOCX File Reading Function
+# ==========================================
 def parse_docx(file_path):
     doc = Document(file_path)
     full_text = "\n".join([p.text.strip() for p in doc.paragraphs if p.text.strip()])
     
-    # Question blocks ko alag karna
     raw_blocks = re.split(r'\n(?=Question:)', full_text)
     questions = []
     
@@ -21,29 +40,32 @@ def parse_docx(file_path):
             continue
         q_data = {}
         
-        # Question text extract karna
+        # Hindi question extract
         q_match = re.search(r'Question:\s*(.*?)(?=\n\([a-d]\)|\nAnswer:)', block, re.DOTALL)
         q_data['q_hi'] = q_match.group(1).strip() if q_match else ""
         
-        # Options extract karna
+        # Options extract
         opts = re.findall(r'\(([a-d])\)\s*(.*?)(?=\n\([a-d]\)|\nAnswer:|\Z)', block, re.DOTALL)
         q_data['opts'] = {k.lower(): v.strip() for k, v in opts}
         
-        # Answer extract karna
+        # Answer extract
         ans_match = re.search(r'Answer:\s*([a-d])', block, re.IGNORECASE)
         q_data['ans'] = ans_match.group(1).lower() if ans_match else ""
         
-        # Solution extract karna
+        # Solution extract
         sol_match = re.search(r'Solution:\s*(.*?)(?=\nKey Points:|\nPositive Marks:|\Z)', block, re.DOTALL)
         q_data['sol'] = sol_match.group(1).strip() if sol_match else ""
         
-        # Key Points extract karna
+        # Key Points extract
         kp_match = re.search(r'Key Points:\s*(.*?)(?=\nPositive Marks:|\Z)', block, re.DOTALL)
         q_data['kp'] = kp_match.group(1).strip() if kp_match else ""
         
         questions.append(q_data)
     return questions
 
+# ==========================================
+# 4. Premium PDF Generator Function
+# ==========================================
 def generate_pdf(questions, output_pdf):
     html_content = """
     <!DOCTYPE html>
@@ -53,38 +75,40 @@ def generate_pdf(questions, output_pdf):
     <style>
       @page {
         size: A4 portrait;
-        margin: 12mm 12mm 18mm 12mm;
+        margin: 12mm 12mm 20mm 12mm;
         @bottom-center {
           content: "Special Education Needs | 9828625119 | Page " counter(page);
           font-family: 'Times New Roman', serif;
-          font-size: 13pt;
-          color: #333;
-          border-top: 1px solid #777;
+          font-size: 14pt;
+          font-weight: bold;
+          color: #222;
+          border-top: 1.5px solid #666;
           width: 100%;
+          padding-top: 4px;
         }
       }
       body {
         font-family: 'Times New Roman', serif;
-        font-size: 15pt;
+        font-size: 18pt;
         line-height: 1.35;
         color: #000;
       }
       .q-card {
-        margin-bottom: 24px;
+        margin-bottom: 26px;
         page-break-inside: avoid;
       }
       .q-header {
         display: flex;
         justify-content: space-between;
-        border-bottom: 2.5px solid #b71c1c;
-        border-left: 6px solid #b71c1c;
-        padding-left: 8px;
-        padding-bottom: 3px;
-        margin-bottom: 8px;
+        border-bottom: 3px solid #b71c1c;
+        border-left: 7px solid #b71c1c;
+        padding-left: 10px;
+        padding-bottom: 4px;
+        margin-bottom: 10px;
         font-weight: bold;
       }
-      .q-title { color: #b71c1c; font-size: 16pt; }
-      .q-marks { color: #444; font-size: 13pt; }
+      .q-title { color: #b71c1c; font-size: 18pt; }
+      .q-marks { color: #333; font-size: 16pt; }
       .bilingual-table {
         width: 100%;
         display: table;
@@ -95,31 +119,31 @@ def generate_pdf(questions, output_pdf):
         width: 50%;
         vertical-align: top;
       }
-      .col-left { padding-right: 12px; }
+      .col-left { padding-right: 14px; }
       .col-right {
-        padding-left: 12px;
-        border-left: 1.5px solid #bbb;
+        padding-left: 14px;
+        border-left: 2px solid #bbb;
       }
-      .q-text { font-weight: bold; margin-bottom: 6px; }
-      .opt { margin-bottom: 4px; }
+      .q-text { font-weight: bold; margin-bottom: 8px; }
+      .opt { margin-bottom: 6px; }
       .ans-box {
         background: #f1f8e9;
         border: 2px solid #2e7d32;
-        padding: 6px 12px;
+        padding: 8px 12px;
         color: #2e7d32;
         font-weight: bold;
-        margin-bottom: 6px;
+        margin-bottom: 8px;
       }
       .sol-box {
         background: #f9fbe7;
         border: 1.5px solid #cddc39;
-        padding: 8px 12px;
-        margin-bottom: 6px;
+        padding: 10px 14px;
+        margin-bottom: 8px;
       }
       .kp-box {
         background: #f5f5f5;
-        border-left: 5px solid #1976d2;
-        padding: 8px 12px;
+        border-left: 6px solid #1976d2;
+        padding: 10px 14px;
       }
       .kp-title { color: #1976d2; font-weight: bold; margin-bottom: 4px; }
     </style>
@@ -162,8 +186,14 @@ def generate_pdf(questions, output_pdf):
     html_content += "</body></html>"
     HTML(string=html_content).write_pdf(output_pdf)
 
+# ==========================================
+# 5. Telegram Handlers
+# ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Namaste! Apni .docx file bhejein, main use turant print-ready PDF book format me convert kar dunga.")
+    await update.message.reply_text(
+        "Namaste! Apni .docx file upload karein.\n"
+        "Main turant use 18pt font aur photo jaise 2-column layout me print-ready PDF bana kar bhej dunga."
+    )
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc_file = update.message.document
@@ -187,7 +217,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_document(
             document=open(output_pdf, "rb"),
             filename=f"Inclusive_Education_Book.pdf",
-            caption="Aapki PDF book taiyar hai!"
+            caption="Aapki PDF book taiyar hai!\nSpecial Education Needs | 9828625119"
         )
     except Exception as e:
         await update.message.reply_text(f"Error aaya: {str(e)}")
@@ -196,12 +226,23 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(output_pdf): os.remove(output_pdf)
         await status_msg.delete()
 
+# ==========================================
+# 6. Main Runner
+# ==========================================
 def main():
+    # Render web service ke port scanner ko pass karne ke liye flask start karein
+    server_thread = Thread(target=run_web)
+    server_thread.daemon = True
+    server_thread.start()
+
+    # Telegram Bot Start
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    print("Bot live hai aur kaam kar raha hai...")
+    
+    print("Bot Render par successfully start ho gaya hai...")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
+    
