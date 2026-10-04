@@ -1,8 +1,9 @@
 FROM python:3.10-slim
 
-# wkhtmltopdf aur Devanagari fonts install karein
+# LibreOffice aur Hindi fonts install karein
 RUN apt-get update && apt-get install -y \
-    wkhtmltopdf \
+    libreoffice \
+    libreoffice-writer \
     fonts-noto-core \
     fonts-noto-extra \
     fonts-dejavu-core \
