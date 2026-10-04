@@ -11,7 +11,7 @@ from weasyprint import HTML
 # ===================================================
 # 1. Telegram Bot Token & Web Server
 # ===================================================
-BOT_TOKEN = "8903776742:AAGeYC3UemM-JsuHZ2Af3dmTRAaC7THwcP0"
+BOT_TOKEN = "8903776742:AAFGB3cINMZf0Y2ielSLNFgyrAzoNhnO59s"
 bot = telebot.TeleBot(BOT_TOKEN)
 
 web_app = Flask(__name__)
