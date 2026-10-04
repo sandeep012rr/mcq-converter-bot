@@ -1,6 +1,5 @@
 import os
 import re
-from io import BytesIO
 from threading import Thread
 from flask import Flask
 from telegram import Update
@@ -8,27 +7,19 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 from docx import Document
 from xhtml2pdf import pisa
 
-# ==========================================
-# 1. Telegram Bot Token
-# ==========================================
 BOT_TOKEN = "8903776742:AAGeYC3UemM-JsuHZ2Af3dmTRAaC7THwcP0"
 
-# ==========================================
-# 2. Render Health-Check Server
-# ==========================================
+# Render Web Service ke port check ke liye Flask app
 web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "Bot is running online!"
+    return "Bot is running online on Render!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     web_app.run(host="0.0.0.0", port=port)
 
-# ==========================================
-# 3. DOCX Reading Logic
-# ==========================================
 def parse_docx(file_path):
     doc = Document(file_path)
     full_text = "\n".join([p.text.strip() for p in doc.paragraphs if p.text.strip()])
@@ -59,9 +50,6 @@ def parse_docx(file_path):
         questions.append(q_data)
     return questions
 
-# ==========================================
-# 4. Stable PDF Generator
-# ==========================================
 def generate_pdf(questions, output_pdf):
     html_content = """
     <!DOCTYPE html>
@@ -81,7 +69,7 @@ def generate_pdf(questions, output_pdf):
       }
       body {
         font-family: 'Times New Roman', serif;
-        font-size: 16pt;
+        font-size: 15pt;
         line-height: 1.35;
         color: #000000;
       }
@@ -197,15 +185,12 @@ def generate_pdf(questions, output_pdf):
     with open(output_pdf, "wb") as pdf_file:
         pisa_status = pisa.CreatePDF(html_content, dest=pdf_file, encoding='utf-8')
         if pisa_status.err:
-            raise Exception("PDF convert karne me dikkat aayi.")
+            raise Exception("PDF conversion failed")
 
-# ==========================================
-# 5. Telegram Handlers
-# ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Namaste! Apni .docx file upload karein.\n"
-        "Main turant 18pt font aur 2-column format me PDF book bana kar bhej dunga."
+        "Main turant 2-column bilingual layout me PDF bana kar bhej dunga."
     )
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -214,7 +199,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Kripya sirf .docx file upload karein.")
         return
 
-    status_msg = await update.message.reply_text("File process ho rahi hai, kripya thoda intezar karein...")
+    status_msg = await update.message.reply_text("File process ho rahi hai, kripya intezar karein...")
     
     file_id = doc_file.file_id
     new_file = await context.bot.get_file(file_id)
@@ -239,9 +224,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(output_pdf): os.remove(output_pdf)
         await status_msg.delete()
 
-# ==========================================
-# 6. Main Runner
-# ==========================================
 def main():
     server_thread = Thread(target=run_web)
     server_thread.daemon = True
@@ -251,9 +233,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
-    print("Bot live hai aur kaam kar raha hai...")
+    print("Bot live hai...")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
-    
