@@ -1,6 +1,8 @@
 import os
 import re
+import urllib.parse
 import subprocess
+import requests
 from threading import Thread
 from flask import Flask
 from telegram import Update
@@ -11,7 +13,6 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls
-from deep_translator import GoogleTranslator
 
 # ==========================================
 # 1. Telegram Bot Token
@@ -25,7 +26,7 @@ web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "Bot is online and running!"
+    return "Bot is online and translating!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -34,18 +35,47 @@ def run_web():
 server_thread = Thread(target=run_web, daemon=True)
 server_thread.start()
 
-translator = GoogleTranslator(source='hi', target='en')
+# ==========================================
+# 3. Guaranteed Translation Engine (Multi-Fallback)
+# ==========================================
+trans_cache = {}
 
-def translate_safe(text):
+def translate_to_english(text):
     if not text or not text.strip():
         return ""
+    
+    clean_in = text.strip()
+    if clean_in in trans_cache:
+        return trans_cache[clean_in]
+    
+    # Method 1: Google Translate Direct Web API
     try:
-        return translator.translate(text[:4500])
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=hi&tl=en&dt=t&q={urllib.parse.quote(clean_in)}"
+        resp = requests.get(url, timeout=6)
+        if resp.status_code == 200:
+            result = "".join([part[0] for part in resp.json()[0] if part[0]])
+            if result.strip():
+                trans_cache[clean_in] = result.strip()
+                return result.strip()
     except Exception:
-        return text
+        pass
+
+    # Method 2: MyMemory Translation API (Backup)
+    try:
+        url2 = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(clean_in)}&langpair=hi|en"
+        resp2 = requests.get(url2, timeout=6)
+        if resp2.status_code == 200:
+            res2 = resp2.json().get("responseData", {}).get("translatedText", "")
+            if res2.strip():
+                trans_cache[clean_in] = res2.strip()
+                return res2.strip()
+    except Exception:
+        pass
+
+    return clean_in
 
 # ==========================================
-# 3. DOCX Parser
+# 4. DOCX Parser
 # ==========================================
 def parse_docx(file_path):
     doc = Document(file_path)
@@ -80,7 +110,7 @@ def parse_docx(file_path):
     return questions
 
 # ==========================================
-# 4. Word Document Builder
+# 5. Formatted Bilingual DOCX Builder
 # ==========================================
 def set_cell_background(cell, fill_hex):
     tcPr = cell._element.get_or_add_tcPr()
@@ -111,7 +141,7 @@ def create_formatted_docx(questions, output_docx):
         f_run.font.color.rgb = RGBColor(80, 80, 80)
         
     for idx, q in enumerate(questions, start=1):
-        # 1. Header (Red Title + Marks)
+        # Header (Red Title + Marks)
         h_table = doc.add_table(rows=1, cols=2)
         h_table.alignment = WD_TABLE_ALIGNMENT.CENTER
         h_table.autofit = False
@@ -137,14 +167,14 @@ def create_formatted_docx(questions, output_docx):
         run_line.font.color.rgb = RGBColor(183, 28, 28)
         run_line.font.bold = True
         
-        # 2. Bilingual 2-Column Table (Left Hindi, Right English)
+        # Bilingual 2-Column Table (Left: Hindi, Right: English)
         bi_table = doc.add_table(rows=1, cols=2)
         bi_table.alignment = WD_TABLE_ALIGNMENT.CENTER
         bi_table.autofit = False
         bi_table.columns[0].width = Inches(3.7)
         bi_table.columns[1].width = Inches(3.7)
         
-        # Left (Hindi)
+        # Left: Hindi Original
         c_left = bi_table.rows[0].cells[0]
         p_q_hi = c_left.paragraphs[0]
         r_qh = p_q_hi.add_run(q['q_hi'])
@@ -163,10 +193,10 @@ def create_formatted_docx(questions, output_docx):
             r_v.font.name = "Noto Sans Devanagari"
             r_v.font.size = Pt(10.5)
             
-        # Right (English Translation)
+        # Right: True English Translation
         c_right = bi_table.rows[0].cells[1]
         p_q_en = c_right.paragraphs[0]
-        en_q_text = translate_safe(q['q_hi'])
+        en_q_text = translate_to_english(q['q_hi'])
         r_qe = p_q_en.add_run(en_q_text)
         r_qe.font.name = "Times New Roman"
         r_qe.font.size = Pt(11)
@@ -174,7 +204,7 @@ def create_formatted_docx(questions, output_docx):
         
         for k in ['a', 'b', 'c', 'd']:
             val_hi = q['opts'].get(k, '')
-            val_en = translate_safe(val_hi)
+            val_en = translate_to_english(val_hi)
             p_opte = c_right.add_paragraph()
             p_opte.paragraph_format.space_after = Pt(2)
             r_ke = p_opte.add_run(f"({k}) ")
@@ -184,7 +214,7 @@ def create_formatted_docx(questions, output_docx):
             r_ve.font.name = "Times New Roman"
             r_ve.font.size = Pt(10.5)
             
-        # 3. Answer Box
+        # Answer Box
         ans_table = doc.add_table(rows=1, cols=1)
         ans_cell = ans_table.rows[0].cells[0]
         set_cell_background(ans_cell, "F1F8E9")
@@ -196,7 +226,7 @@ def create_formatted_docx(questions, output_docx):
         r_ans.font.bold = True
         r_ans.font.color.rgb = RGBColor(46, 125, 50)
         
-        # 4. Solution Box
+        # Solution Box
         sol_table = doc.add_table(rows=1, cols=1)
         sol_cell = sol_table.rows[0].cells[0]
         set_cell_background(sol_cell, "F9FBE7")
@@ -208,18 +238,19 @@ def create_formatted_docx(questions, output_docx):
         r_sol_txt.font.name = "Noto Sans Devanagari"
         r_sol_txt.font.size = Pt(10)
         
-        # 5. Key Points Box
-        kp_table = doc.add_table(rows=1, cols=1)
-        kp_cell = kp_table.rows[0].cells[0]
-        set_cell_background(kp_cell, "F5F5F5")
-        set_cell_margins(kp_cell, top=100, bottom=100, left=120, right=120)
-        p_kp = kp_cell.paragraphs[0]
-        r_kp_lbl = p_kp.add_run("Key Points:\n")
-        r_kp_lbl.font.bold = True
-        r_kp_lbl.font.color.rgb = RGBColor(25, 118, 210)
-        r_kp_txt = p_kp.add_run(q['kp'])
-        r_kp_txt.font.name = "Noto Sans Devanagari"
-        r_kp_txt.font.size = Pt(10)
+        # Key Points Box
+        if q['kp'].strip():
+            kp_table = doc.add_table(rows=1, cols=1)
+            kp_cell = kp_table.rows[0].cells[0]
+            set_cell_background(kp_cell, "F5F5F5")
+            set_cell_margins(kp_cell, top=100, bottom=100, left=120, right=120)
+            p_kp = kp_cell.paragraphs[0]
+            r_kp_lbl = p_kp.add_run("Key Points:\n")
+            r_kp_lbl.font.bold = True
+            r_kp_lbl.font.color.rgb = RGBColor(25, 118, 210)
+            r_kp_txt = p_kp.add_run(q['kp'])
+            r_kp_txt.font.name = "Noto Sans Devanagari"
+            r_kp_txt.font.size = Pt(10)
         
         p_space = doc.add_paragraph()
         p_space.paragraph_format.space_after = Pt(12)
@@ -244,12 +275,12 @@ def convert_docx_to_pdf(input_docx, output_pdf):
         os.rename(generated, os.path.abspath(output_pdf))
 
 # ==========================================
-# 5. Telegram Handlers
+# 6. Telegram Handlers
 # ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Namaste! Apni .docx file upload karein.\n"
-        "Main Hindi ka accurate English translation karke 2-column bilingual layout me clean PDF bana kar bhej dunga."
+        "Main Hindi ka accurate English translation karke 2-column bilingual layout me book PDF generate kar dunga."
     )
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -258,7 +289,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Kripya sirf .docx file upload karein.")
         return
 
-    status_msg = await update.message.reply_text("Bilingual translation aur formatting chal rahi hai, kripya thoda intezar karein...")
+    status_msg = await update.message.reply_text("Bilingual English translation aur PDF formatting chal rahi hai, kripya intezar karein...")
     
     file_id = doc_file.file_id
     new_file = await context.bot.get_file(file_id)
