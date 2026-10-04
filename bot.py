@@ -1,32 +1,33 @@
 import os
 import re
+from io import BytesIO
 from threading import Thread
 from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from docx import Document
-from weasyprint import HTML
+from xhtml2pdf import pisa
 
 # ==========================================
-# 1. Aapka Telegram Bot Token
+# 1. Telegram Bot Token
 # ==========================================
 BOT_TOKEN = "8903776742:AAGeYC3UemM-JsuHZ2Af3dmTRAaC7THwcP0"
 
 # ==========================================
-# 2. Render Web Service Health-Check Server
+# 2. Render Health-Check Server
 # ==========================================
 web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "Bot is running perfectly on Render!"
+    return "Bot is running online!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     web_app.run(host="0.0.0.0", port=port)
 
 # ==========================================
-# 3. DOCX File Reading Function
+# 3. DOCX Reading Logic
 # ==========================================
 def parse_docx(file_path):
     doc = Document(file_path)
@@ -40,23 +41,18 @@ def parse_docx(file_path):
             continue
         q_data = {}
         
-        # Hindi question extract
         q_match = re.search(r'Question:\s*(.*?)(?=\n\([a-d]\)|\nAnswer:)', block, re.DOTALL)
         q_data['q_hi'] = q_match.group(1).strip() if q_match else ""
         
-        # Options extract
         opts = re.findall(r'\(([a-d])\)\s*(.*?)(?=\n\([a-d]\)|\nAnswer:|\Z)', block, re.DOTALL)
         q_data['opts'] = {k.lower(): v.strip() for k, v in opts}
         
-        # Answer extract
         ans_match = re.search(r'Answer:\s*([a-d])', block, re.IGNORECASE)
         q_data['ans'] = ans_match.group(1).lower() if ans_match else ""
         
-        # Solution extract
         sol_match = re.search(r'Solution:\s*(.*?)(?=\nKey Points:|\nPositive Marks:|\Z)', block, re.DOTALL)
         q_data['sol'] = sol_match.group(1).strip() if sol_match else ""
         
-        # Key Points extract
         kp_match = re.search(r'Key Points:\s*(.*?)(?=\nPositive Marks:|\Z)', block, re.DOTALL)
         q_data['kp'] = kp_match.group(1).strip() if kp_match else ""
         
@@ -64,7 +60,7 @@ def parse_docx(file_path):
     return questions
 
 # ==========================================
-# 4. Premium PDF Generator Function
+# 4. Stable PDF Generator
 # ==========================================
 def generate_pdf(questions, output_pdf):
     html_content = """
@@ -74,106 +70,119 @@ def generate_pdf(questions, output_pdf):
     <meta charset="utf-8">
     <style>
       @page {
-        size: A4 portrait;
-        margin: 12mm 12mm 20mm 12mm;
+        size: a4 portrait;
+        margin: 1.2cm 1.2cm 1.8cm 1.2cm;
         @bottom-center {
-          content: "Special Education Needs | 9828625119 | Page " counter(page);
+          content: "Special Education Needs | 9828625119";
           font-family: 'Times New Roman', serif;
-          font-size: 14pt;
-          font-weight: bold;
-          color: #222;
-          border-top: 1.5px solid #666;
-          width: 100%;
-          padding-top: 4px;
+          font-size: 13pt;
+          color: #333333;
         }
       }
       body {
         font-family: 'Times New Roman', serif;
-        font-size: 18pt;
+        font-size: 16pt;
         line-height: 1.35;
-        color: #000;
+        color: #000000;
       }
       .q-card {
-        margin-bottom: 26px;
+        margin-bottom: 22px;
         page-break-inside: avoid;
       }
-      .q-header {
-        display: flex;
-        justify-content: space-between;
-        border-bottom: 3px solid #b71c1c;
-        border-left: 7px solid #b71c1c;
-        padding-left: 10px;
+      .header-table {
+        width: 100%;
+        border-bottom: 2px solid #b71c1c;
+        margin-bottom: 8px;
         padding-bottom: 4px;
-        margin-bottom: 10px;
+      }
+      .q-title {
+        color: #b71c1c;
+        font-size: 17pt;
         font-weight: bold;
       }
-      .q-title { color: #b71c1c; font-size: 18pt; }
-      .q-marks { color: #333; font-size: 16pt; }
+      .q-marks {
+        text-align: right;
+        font-size: 14pt;
+        color: #555555;
+      }
       .bilingual-table {
         width: 100%;
-        display: table;
         margin-bottom: 10px;
       }
-      .col {
-        display: table-cell;
+      .col-left {
         width: 50%;
         vertical-align: top;
+        padding-right: 10px;
       }
-      .col-left { padding-right: 14px; }
       .col-right {
-        padding-left: 14px;
-        border-left: 2px solid #bbb;
+        width: 50%;
+        vertical-align: top;
+        padding-left: 10px;
+        border-left: 1px solid #cccccc;
       }
-      .q-text { font-weight: bold; margin-bottom: 8px; }
-      .opt { margin-bottom: 6px; }
+      .q-text {
+        font-weight: bold;
+        margin-bottom: 6px;
+      }
+      .opt {
+        margin-bottom: 4px;
+      }
       .ans-box {
-        background: #f1f8e9;
-        border: 2px solid #2e7d32;
-        padding: 8px 12px;
+        background-color: #f1f8e9;
+        border: 1px solid #2e7d32;
+        padding: 6px 10px;
         color: #2e7d32;
         font-weight: bold;
-        margin-bottom: 8px;
+        margin-bottom: 6px;
       }
       .sol-box {
-        background: #f9fbe7;
-        border: 1.5px solid #cddc39;
-        padding: 10px 14px;
-        margin-bottom: 8px;
+        background-color: #f9fbe7;
+        border: 1px solid #cddc39;
+        padding: 8px 10px;
+        margin-bottom: 6px;
       }
       .kp-box {
-        background: #f5f5f5;
-        border-left: 6px solid #1976d2;
-        padding: 10px 14px;
+        background-color: #f5f5f5;
+        border-left: 4px solid #1976d2;
+        padding: 8px 10px;
       }
-      .kp-title { color: #1976d2; font-weight: bold; margin-bottom: 4px; }
+      .kp-title {
+        color: #1976d2;
+        font-weight: bold;
+        margin-bottom: 4px;
+      }
     </style>
     </head>
     <body>
     """
-    
+
     for idx, q in enumerate(questions, start=1):
         html_content += f"""
         <div class="q-card">
-          <div class="q-header">
-            <span class="q-title">Question {idx} / प्रश्न {idx}</span>
-            <span class="q-marks">Marks: +1, -0</span>
-          </div>
-          <div class="bilingual-table">
-            <div class="col col-left">
-              <div class="q-text">{q['q_hi']}</div>
-              <div class="opt"><b>(a)</b> {q['opts'].get('a', '')}</div>
-              <div class="opt"><b>(b)</b> {q['opts'].get('b', '')}</div>
-              <div class="opt"><b>(c)</b> {q['opts'].get('c', '')}</div>
-              <div class="opt"><b>(d)</b> {q['opts'].get('d', '')}</div>
-            </div>
-            <div class="col col-right">
-              <div class="q-text">{q['q_hi']}</div>
-              <div class="opt"><b>(a)</b> {q['opts'].get('a', '')}</div>
-              <div class="opt"><b>(b)</b> {q['opts'].get('b', '')}</div>
-              <div class="opt"><b>(c)</b> {q['opts'].get('c', '')}</div>
-              <div class="opt"><b>(d)</b> {q['opts'].get('d', '')}</div>
-            </div>
-          </div>
+          <table class="header-table">
+            <tr>
+              <td class="q-title">Question {idx} / प्रश्न {idx}</td>
+              <td class="q-marks">Marks: +1, -0</td>
+            </tr>
+          </table>
+          <table class="bilingual-table">
+            <tr>
+              <td class="col-left">
+                <div class="q-text">{q['q_hi']}</div>
+                <div class="opt"><b>(a)</b> {q['opts'].get('a', '')}</div>
+                <div class="opt"><b>(b)</b> {q['opts'].get('b', '')}</div>
+                <div class="opt"><b>(c)</b> {q['opts'].get('c', '')}</div>
+                <div class="opt"><b>(d)</b> {q['opts'].get('d', '')}</div>
+              </td>
+              <td class="col-right">
+                <div class="q-text">{q['q_hi']}</div>
+                <div class="opt"><b>(a)</b> {q['opts'].get('a', '')}</div>
+                <div class="opt"><b>(b)</b> {q['opts'].get('b', '')}</div>
+                <div class="opt"><b>(c)</b> {q['opts'].get('c', '')}</div>
+                <div class="opt"><b>(d)</b> {q['opts'].get('d', '')}</div>
+              </td>
+            </tr>
+          </table>
           <div class="ans-box">Answer: ({q['ans']})</div>
           <div class="sol-box"><b>Solution:</b> {q['sol']}</div>
           <div class="kp-box">
@@ -182,9 +191,13 @@ def generate_pdf(questions, output_pdf):
           </div>
         </div>
         """
-        
+
     html_content += "</body></html>"
-    HTML(string=html_content).write_pdf(output_pdf)
+    
+    with open(output_pdf, "wb") as pdf_file:
+        pisa_status = pisa.CreatePDF(html_content, dest=pdf_file, encoding='utf-8')
+        if pisa_status.err:
+            raise Exception("PDF convert karne me dikkat aayi.")
 
 # ==========================================
 # 5. Telegram Handlers
@@ -192,7 +205,7 @@ def generate_pdf(questions, output_pdf):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Namaste! Apni .docx file upload karein.\n"
-        "Main turant use 18pt font aur photo jaise 2-column layout me print-ready PDF bana kar bhej dunga."
+        "Main turant 18pt font aur 2-column format me PDF book bana kar bhej dunga."
     )
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -216,7 +229,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_document(
             document=open(output_pdf, "rb"),
-            filename=f"Inclusive_Education_Book.pdf",
+            filename="Inclusive_Education_Book.pdf",
             caption="Aapki PDF book taiyar hai!\nSpecial Education Needs | 9828625119"
         )
     except Exception as e:
@@ -230,17 +243,15 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 6. Main Runner
 # ==========================================
 def main():
-    # Render web service ke port scanner ko pass karne ke liye flask start karein
     server_thread = Thread(target=run_web)
     server_thread.daemon = True
     server_thread.start()
 
-    # Telegram Bot Start
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
-    print("Bot Render par successfully start ho gaya hai...")
+    print("Bot live hai aur kaam kar raha hai...")
     app.run_polling()
 
 if __name__ == "__main__":
