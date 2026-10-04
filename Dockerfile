@@ -1,6 +1,5 @@
 FROM python:3.10-slim
 
-# LibreOffice aur Hindi fonts install karein
 RUN apt-get update && apt-get install -y \
     libreoffice \
     libreoffice-writer \
