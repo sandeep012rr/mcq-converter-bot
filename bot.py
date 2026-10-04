@@ -9,8 +9,8 @@ from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.oxml import OxmlElement, parse_xml
-from docx.oxml.ns import qn, nsdecls
+from docx.oxml import parse_xml
+from docx.oxml.ns import nsdecls
 from deep_translator import GoogleTranslator
 
 # ==========================================
@@ -19,7 +19,7 @@ from deep_translator import GoogleTranslator
 BOT_TOKEN = "8903776742:AAGeYC3UemM-JsuHZ2Af3dmTRAaC7THwcP0"
 
 # ==========================================
-# 2. Render Health-Check Server
+# 2. Render Port Listener (Flask)
 # ==========================================
 web_app = Flask(__name__)
 
@@ -40,7 +40,6 @@ def translate_safe(text):
     if not text or not text.strip():
         return ""
     try:
-        # 4500 characters se bada text na bhejein
         return translator.translate(text[:4500])
     except Exception:
         return text
@@ -61,23 +60,18 @@ def parse_docx(file_path):
             
         q_data = {}
         
-        # Question extraction
         q_match = re.search(r'(?:Question:\s*|\d+\s*/\s*प्रश्न\s*\d*\s*)(.*?)(?=\n\([a-d]\)|\nAnswer:)', block, re.DOTALL)
         q_data['q_hi'] = q_match.group(1).strip() if q_match else ""
         
-        # Options
         opts = re.findall(r'\(([a-d])\)\s*(.*?)(?=\n\([a-d]\)|\nAnswer:|\Z)', block, re.DOTALL)
         q_data['opts'] = {k.lower(): v.strip() for k, v in opts}
         
-        # Answer
         ans_match = re.search(r'Answer:\s*([a-d])', block, re.IGNORECASE)
         q_data['ans'] = ans_match.group(1).lower() if ans_match else ""
         
-        # Solution
         sol_match = re.search(r'Solution:\s*(.*?)(?=\nKey Points:|\nPositive Marks:|\Z)', block, re.DOTALL)
         q_data['sol'] = sol_match.group(1).strip() if sol_match else ""
         
-        # Key Points
         kp_match = re.search(r'Key Points:\s*(.*?)(?=\nPositive Marks:|\Z)', block, re.DOTALL)
         q_data['kp'] = kp_match.group(1).strip() if kp_match else ""
         
@@ -101,14 +95,12 @@ def set_cell_margins(cell, top=100, bottom=100, left=150, right=150):
 def create_formatted_docx(questions, output_docx):
     doc = Document()
     
-    # Page setup
     for section in doc.sections:
         section.top_margin = Inches(0.5)
         section.bottom_margin = Inches(0.6)
         section.left_margin = Inches(0.5)
         section.right_margin = Inches(0.5)
         
-        # Footer
         footer = section.footer
         f_p = footer.paragraphs[0]
         f_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -138,7 +130,6 @@ def create_formatted_docx(questions, output_docx):
         r1.font.color.rgb = RGBColor(100, 100, 100)
         h_table.rows[0].cells[1].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
         
-        # Red Border Bottom
         p_line = doc.add_paragraph()
         p_line.paragraph_format.space_before = Pt(0)
         p_line.paragraph_format.space_after = Pt(4)
@@ -193,7 +184,7 @@ def create_formatted_docx(questions, output_docx):
             r_ve.font.name = "Times New Roman"
             r_ve.font.size = Pt(10.5)
             
-        # 3. Answer Box (Green)
+        # 3. Answer Box
         ans_table = doc.add_table(rows=1, cols=1)
         ans_cell = ans_table.rows[0].cells[0]
         set_cell_background(ans_cell, "F1F8E9")
@@ -217,7 +208,7 @@ def create_formatted_docx(questions, output_docx):
         r_sol_txt.font.name = "Noto Sans Devanagari"
         r_sol_txt.font.size = Pt(10)
         
-        # 5. Key Points Box (Blue Accent)
+        # 5. Key Points Box
         kp_table = doc.add_table(rows=1, cols=1)
         kp_cell = kp_table.rows[0].cells[0]
         set_cell_background(kp_cell, "F5F5F5")
@@ -230,29 +221,27 @@ def create_formatted_docx(questions, output_docx):
         r_kp_txt.font.name = "Noto Sans Devanagari"
         r_kp_txt.font.size = Pt(10)
         
-        # Spacing between questions
         p_space = doc.add_paragraph()
         p_space.paragraph_format.space_after = Pt(12)
         
     doc.save(output_docx)
 
 def convert_docx_to_pdf(input_docx, output_pdf):
-    # LibreOffice headless command se 100% accurate PDF banti hai
+    out_dir = os.path.dirname(os.path.abspath(output_pdf)) or "."
     cmd = [
         "libreoffice",
         "--headless",
         "--convert-to",
         "pdf",
-        input_docx,
+        os.path.abspath(input_docx),
         "--outdir",
-        os.path.dirname(output_pdf) or "."
+        out_dir
     ]
     subprocess.run(cmd, check=True)
     
-    # LibreOffice input filename ke hisaab se pdf banata hai
-    temp_generated = input_docx.rsplit(".", 1)[0] + ".pdf"
-    if os.path.exists(temp_generated) and temp_generated != output_pdf:
-        os.rename(temp_generated, output_pdf)
+    generated = os.path.join(out_dir, os.path.splitext(os.path.basename(input_docx))[0] + ".pdf")
+    if os.path.exists(generated) and generated != os.path.abspath(output_pdf):
+        os.rename(generated, os.path.abspath(output_pdf))
 
 # ==========================================
 # 5. Telegram Handlers
@@ -260,7 +249,7 @@ def convert_docx_to_pdf(input_docx, output_pdf):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Namaste! Apni .docx file upload karein.\n"
-        "Main Hindi ka accurate English translation karke dono ko 2-column layout me clean PDF bana kar bhej dunga!"
+        "Main Hindi ka accurate English translation karke 2-column bilingual layout me clean PDF bana kar bhej dunga."
     )
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -307,3 +296,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+        
