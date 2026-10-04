@@ -1,21 +1,11 @@
 import os
 import re
-import urllib.request
 from threading import Thread
 from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from docx import Document
-
-from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether
-)
-from reportlab.pdfgen import canvas
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+import pdfkit
 
 # ==========================================
 # 1. Telegram Bot Token
@@ -23,38 +13,13 @@ from reportlab.pdfbase.ttfonts import TTFont
 BOT_TOKEN = "8903776742:AAGeYC3UemM-JsuHZ2Af3dmTRAaC7THwcP0"
 
 # ==========================================
-# 2. Hindi Font Setup (Noto Sans Devanagari)
-# ==========================================
-FONT_PATH = "NotoSansDevanagari-Regular.ttf"
-FONT_BOLD_PATH = "NotoSansDevanagari-Bold.ttf"
-
-def ensure_hindi_fonts():
-    # Regular Hindi Font
-    if not os.path.exists(FONT_PATH):
-        url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansDevanagari/NotoSansDevanagari-Regular.ttf"
-        urllib.request.urlretrieve(url, FONT_PATH)
-    pdfmetrics.registerFont(TTFont('HindiFont', FONT_PATH))
-
-    # Bold Hindi Font
-    if not os.path.exists(FONT_BOLD_PATH):
-        url_bold = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansDevanagari/NotoSansDevanagari-Bold.ttf"
-        urllib.request.urlretrieve(url_bold, FONT_BOLD_PATH)
-    pdfmetrics.registerFont(TTFont('HindiFont-Bold', FONT_BOLD_PATH))
-
-try:
-    ensure_hindi_fonts()
-    print("Hindi Devanagari fonts registered successfully!")
-except Exception as e:
-    print(f"Font download error: {e}")
-
-# ==========================================
-# 3. Render Port Listener (Flask)
+# 2. Render Port Listener (Flask)
 # ==========================================
 web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "Bot is live and running!"
+    return "Bot is online and running!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -64,241 +29,229 @@ server_thread = Thread(target=run_web, daemon=True)
 server_thread.start()
 
 # ==========================================
-# 4. Canvas for Auto Footer
+# 3. DOCX Parser
 # ==========================================
-class NumberedCanvas(canvas.Canvas):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._saved_page_states = []
+def clean_text(txt):
+    if not txt:
+        return ""
+    txt = re.sub(r'[\r\t]', ' ', txt)
+    txt = re.sub(r' +', ' ', txt)
+    return txt.strip()
 
-    def showPage(self):
-        self._saved_page_states.append(dict(self.__dict__))
-        self._startPage()
-
-    def save(self):
-        num_pages = len(self._saved_page_states)
-        for state in self._saved_page_states:
-            self.__dict__.update(state)
-            self.draw_footer(num_pages)
-            super().showPage()
-        super().save()
-
-    def draw_footer(self, page_count):
-        self.saveState()
-        self.setFont("HindiFont", 11)
-        self.setStrokeColor(colors.HexColor("#777777"))
-        self.setLineWidth(0.8)
-        self.line(36, 42, 595 - 36, 42)
-        
-        footer_text = f"Special Education Needs | 9828625119 | Page {self._pageNumber} of {page_count}"
-        self.setFillColor(colors.HexColor("#222222"))
-        self.drawCentredString(595 / 2.0, 26, footer_text)
-        self.restoreState()
-
-# ==========================================
-# 5. DOCX Parser
-# ==========================================
 def parse_docx(file_path):
     doc = Document(file_path)
     full_text = "\n".join([p.text.strip() for p in doc.paragraphs if p.text.strip()])
     
-    raw_blocks = re.split(r'\n(?=Question:)', full_text)
+    raw_blocks = re.split(r'\n(?=Question:|\d+\s*/\s*प्रश्न)', full_text)
     questions = []
     
     for block in raw_blocks:
-        if not block.strip().startswith("Question:"):
+        if not re.search(r'(Question:|\d+\s*/\s*प्रश्न)', block):
             continue
+            
         q_data = {}
         
-        q_match = re.search(r'Question:\s*(.*?)(?=\n\([a-d]\)|\nAnswer:)', block, re.DOTALL)
-        q_data['q_hi'] = q_match.group(1).strip() if q_match else ""
+        # Question text
+        q_match = re.search(r'(?:Question:\s*|\d+\s*/\s*प्रश्न\s*\d*\s*)(.*?)(?=\n\([a-d]\)|\nAnswer:)', block, re.DOTALL)
+        raw_q = q_match.group(1).strip() if q_match else ""
         
+        # English translation extraction (agar slash ya bracket me ho)
+        q_data['q_hi'] = clean_text(raw_q)
+        q_data['q_en'] = clean_text(raw_q)  # Default fallback
+        
+        # Options
         opts = re.findall(r'\(([a-d])\)\s*(.*?)(?=\n\([a-d]\)|\nAnswer:|\Z)', block, re.DOTALL)
-        q_data['opts'] = {k.lower(): v.strip() for k, v in opts}
+        q_data['opts'] = {k.lower(): clean_text(v) for k, v in opts}
         
+        # Answer
         ans_match = re.search(r'Answer:\s*([a-d])', block, re.IGNORECASE)
-        q_data['ans'] = ans_match.group(1).lower() if ans_match else ""
+        q_data['ans'] = ans_match.group(1).upper() if ans_match else ""
         
+        # Solution
         sol_match = re.search(r'Solution:\s*(.*?)(?=\nKey Points:|\nPositive Marks:|\Z)', block, re.DOTALL)
-        q_data['sol'] = sol_match.group(1).strip() if sol_match else ""
+        q_data['sol'] = clean_text(sol_match.group(1)) if sol_match else ""
         
+        # Key Points
         kp_match = re.search(r'Key Points:\s*(.*?)(?=\nPositive Marks:|\Z)', block, re.DOTALL)
-        q_data['kp'] = kp_match.group(1).strip() if kp_match else ""
+        q_data['kp'] = clean_text(kp_match.group(1)) if kp_match else ""
         
         questions.append(q_data)
+        
     return questions
 
 # ==========================================
-# 6. PDF Generator with Devanagari Support
+# 4. WebKit-Based PDF Generator (Natural Devanagari)
 # ==========================================
 def generate_pdf(questions, output_pdf):
-    doc = SimpleDocTemplate(
-        output_pdf,
-        pagesize=A4,
-        leftMargin=36,
-        rightMargin=36,
-        topMargin=36,
-        bottomMargin=54
-    )
-    
-    styles = getSampleStyleSheet()
-    
-    title_left = ParagraphStyle(
-        'HeaderTitle',
-        parent=styles['Normal'],
-        fontName='HindiFont-Bold',
-        fontSize=12,
-        leading=15,
-        textColor=colors.HexColor('#B71C1C')
-    )
-    title_right = ParagraphStyle(
-        'HeaderMarks',
-        parent=styles['Normal'],
-        fontName='HindiFont',
-        fontSize=11,
-        leading=15,
-        alignment=2,
-        textColor=colors.HexColor('#444444')
-    )
-    q_style = ParagraphStyle(
-        'QuestionText',
-        parent=styles['Normal'],
-        fontName='HindiFont-Bold',
-        fontSize=10.5,
-        leading=14.5,
-        textColor=colors.black
-    )
-    opt_style = ParagraphStyle(
-        'OptionText',
-        parent=styles['Normal'],
-        fontName='HindiFont',
-        fontSize=10,
-        leading=14,
-        textColor=colors.black
-    )
-    ans_style = ParagraphStyle(
-        'AnswerText',
-        parent=styles['Normal'],
-        fontName='HindiFont-Bold',
-        fontSize=11,
-        leading=14,
-        textColor=colors.HexColor('#2E7D32')
-    )
-    sol_style = ParagraphStyle(
-        'SolutionText',
-        parent=styles['Normal'],
-        fontName='HindiFont',
-        fontSize=10,
-        leading=14,
-        textColor=colors.black
-    )
-    kp_style = ParagraphStyle(
-        'KeyPointsText',
-        parent=styles['Normal'],
-        fontName='HindiFont',
-        fontSize=9.5,
-        leading=13.5,
-        textColor=colors.HexColor('#222222')
-    )
-    
-    story = []
-    content_width = 595 - 72
-    col_width = content_width / 2.0
-    
+    html_content = """<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Devanagari:wght@400;600;700&display=swap');
+  
+  body {
+    font-family: 'Noto Sans Devanagari', 'Times New Roman', serif;
+    font-size: 13pt;
+    line-height: 1.45;
+    color: #111;
+    margin: 0;
+    padding: 0;
+  }
+  .q-card {
+    page-break-inside: avoid;
+    margin-bottom: 22px;
+    border-bottom: 1px solid #e0e0e0;
+    padding-bottom: 14px;
+  }
+  .q-header {
+    border-left: 5px solid #b71c1c;
+    border-bottom: 1.5px solid #b71c1c;
+    padding: 4px 8px;
+    margin-bottom: 8px;
+  }
+  .q-header table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .q-title {
+    color: #b71c1c;
+    font-weight: 700;
+    font-size: 13.5pt;
+    text-align: left;
+  }
+  .q-marks {
+    color: #555;
+    font-size: 11pt;
+    text-align: right;
+  }
+  .bilingual-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 8px;
+  }
+  .col-hindi {
+    width: 50%;
+    vertical-align: top;
+    padding-right: 12px;
+  }
+  .col-eng {
+    width: 50%;
+    vertical-align: top;
+    padding-left: 12px;
+    border-left: 1px solid #ccc;
+  }
+  .q-text {
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  .opt-line {
+    margin: 3px 0;
+  }
+  .opt-key {
+    font-weight: 700;
+    color: #0d47a1;
+  }
+  .ans-box {
+    background-color: #f1f8e9;
+    border: 1.5px solid #2e7d32;
+    padding: 6px 10px;
+    color: #2e7d32;
+    font-weight: 700;
+    margin-bottom: 6px;
+    border-radius: 3px;
+  }
+  .sol-box {
+    background-color: #f9fbe7;
+    border: 1px solid #cddc39;
+    padding: 6px 10px;
+    margin-bottom: 6px;
+    border-radius: 3px;
+  }
+  .kp-box {
+    background-color: #f5f5f5;
+    border-left: 4px solid #1976d2;
+    padding: 6px 10px;
+    border-radius: 2px;
+  }
+  .kp-title {
+    color: #1976d2;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+</style>
+</head>
+<body>
+"""
+
     for idx, q in enumerate(questions, start=1):
-        q_elements = []
-        
-        # 1. Header Bar
-        hdr_data = [[
-            Paragraph(f"Question {idx} / प्रश्न {idx}", title_left),
-            Paragraph("Marks: +1, -0", title_right)
-        ]]
-        hdr_table = Table(hdr_data, colWidths=[col_width, col_width])
-        hdr_table.setStyle(TableStyle([
-            ('LINEBEFORE', (0, 0), (0, -1), 4, colors.HexColor('#B71C1C')),
-            ('LINEBELOW', (0, 0), (-1, -1), 1.5, colors.HexColor('#B71C1C')),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
-            ('TOPPADDING', (0, 0), (-1, -1), 2),
-            ('LEFTPADDING', (0, 0), (0, -1), 6),
-            ('RIGHTPADDING', (-1, 0), (-1, -1), 2),
-        ]))
-        q_elements.append(hdr_table)
-        q_elements.append(Spacer(1, 5))
-        
-        # 2. Bilingual Two Columns
-        left_flowables = [Paragraph(q['q_hi'], q_style), Spacer(1, 4)]
-        for opt_key in ['a', 'b', 'c', 'd']:
-            text = q['opts'].get(opt_key, '')
-            left_flowables.append(Paragraph(f"<b>({opt_key})</b> {text}", opt_style))
-            left_flowables.append(Spacer(1, 2))
+        opts_left_html = ""
+        opts_right_html = ""
+        for key in ['a', 'b', 'c', 'd']:
+            val = q['opts'].get(key, '')
+            opts_left_html += f'<div class="opt-line"><span class="opt-key">({key})</span> {val}</div>'
+            opts_right_html += f'<div class="opt-line"><span class="opt-key">({key})</span> {val}</div>'
             
-        right_flowables = [Paragraph(q['q_hi'], q_style), Spacer(1, 4)]
-        for opt_key in ['a', 'b', 'c', 'd']:
-            text = q['opts'].get(opt_key, '')
-            right_flowables.append(Paragraph(f"<b>({opt_key})</b> {text}", opt_style))
-            right_flowables.append(Spacer(1, 2))
-            
-        bi_table = Table([[left_flowables, right_flowables]], colWidths=[col_width - 6, col_width - 6])
-        bi_table.setStyle(TableStyle([
-            ('LINEBEFORE', (1, 0), (1, -1), 1, colors.HexColor('#D0D0D0')),
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('RIGHTPADDING', (0, 0), (0, -1), 8),
-            ('LEFTPADDING', (1, 0), (1, -1), 8),
-            ('TOPPADDING', (0, 0), (-1, -1), 2),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-        ]))
-        q_elements.append(bi_table)
-        q_elements.append(Spacer(1, 5))
+        kp_formatted = q['kp'].replace('\n', '<br>')
         
-        # 3. Answer Box
-        ans_data = [[Paragraph(f"Answer: ({q['ans'].upper()})", ans_style)]]
-        ans_table = Table(ans_data, colWidths=[content_width])
-        ans_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F1F8E9')),
-            ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#2E7D32')),
-            ('TOPPADDING', (0, 0), (-1, -1), 4),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-            ('LEFTPADDING', (0, 0), (-1, -1), 8),
-        ]))
-        q_elements.append(ans_table)
-        q_elements.append(Spacer(1, 4))
-        
-        # 4. Solution Box
-        sol_data = [[Paragraph(f"<b>Solution:</b> {q['sol']}", sol_style)]]
-        sol_table = Table(sol_data, colWidths=[content_width])
-        sol_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F9FBE7')),
-            ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#CDDC39')),
-            ('TOPPADDING', (0, 0), (-1, -1), 4),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-            ('LEFTPADDING', (0, 0), (-1, -1), 8),
-        ]))
-        q_elements.append(sol_table)
-        q_elements.append(Spacer(1, 4))
-        
-        # 5. Key Points Box
-        kp_html = q['kp'].replace('\n', '<br/>')
-        kp_data = [[Paragraph(f"<font color='#1976D2'><b>Key Points:</b></font><br/>{kp_html}", kp_style)]]
-        kp_table = Table(kp_data, colWidths=[content_width])
-        kp_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F5F5F5')),
-            ('LINEBEFORE', (0, 0), (0, -1), 3.5, colors.HexColor('#1976D2')),
-            ('TOPPADDING', (0, 0), (-1, -1), 4),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-            ('LEFTPADDING', (0, 0), (-1, -1), 8),
-        ]))
-        q_elements.append(kp_table)
-        q_elements.append(Spacer(1, 14))
-        
-        story.append(KeepTogether(q_elements))
-        
-    doc.build(story, canvasmaker=NumberedCanvas)
+        html_content += f"""
+<div class="q-card">
+  <div class="q-header">
+    <table>
+      <tr>
+        <td class="q-title">Question {idx} / प्रश्न {idx}</td>
+        <td class="q-marks">Marks: +1, -0</td>
+      </tr>
+    </table>
+  </div>
+  <table class="bilingual-table">
+    <tr>
+      <td class="col-hindi">
+        <div class="q-text">{q['q_hi']}</div>
+        {opts_left_html}
+      </td>
+      <td class="col-eng">
+        <div class="q-text">{q['q_en']}</div>
+        {opts_right_html}
+      </td>
+    </tr>
+  </table>
+  <div class="ans-box">Answer: ({q['ans']})</div>
+  <div class="sol-box"><b>Solution:</b> {q['sol']}</div>
+  <div class="kp-box">
+    <div class="kp-title">Key Points:</div>
+    {kp_formatted}
+  </div>
+</div>
+"""
+
+    html_content += "</body></html>"
+    
+    options = {
+        'page-size': 'A4',
+        'margin-top': '12mm',
+        'margin-bottom': '18mm',
+        'margin-left': '12mm',
+        'margin-right': '12mm',
+        'encoding': "UTF-8",
+        'footer-line': '',
+        'footer-center': 'Special Education Needs | 9828625119 | Page [page] of [toPage]',
+        'footer-font-size': '10',
+        'footer-font-name': 'Noto Sans Devanagari',
+        'enable-local-file-access': None,
+        'quiet': ''
+    }
+    
+    pdfkit.from_string(html_content, output_pdf, options=options)
 
 # ==========================================
-# 7. Telegram Handlers
+# 5. Telegram Handlers
 # ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Namaste! Apni .docx file upload karein, Hindi aur English dono clean PDF format me milenge.")
+    await update.message.reply_text(
+        "Namaste! Apni .docx file upload karein.\n"
+        "Main turant clear Hindi fonts aur professional layout ke sath PDF generate karke bhej dunga."
+    )
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc_file = update.message.document
@@ -306,7 +259,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Kripya sirf .docx file upload karein.")
         return
 
-    status_msg = await update.message.reply_text("File process ho rahi hai, kripya intezar karein...")
+    status_msg = await update.message.reply_text("PDF taiyar ho rahi hai, kripya intezar karein...")
     
     file_id = doc_file.file_id
     new_file = await context.bot.get_file(file_id)
@@ -322,7 +275,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_document(
             document=open(output_pdf, "rb"),
             filename="Inclusive_Education_Book.pdf",
-            caption="Aapki PDF book taiyar hai!\nSpecial Education Needs | 9828625119"
+            caption="Aapki clean PDF taiyar hai!\nSpecial Education Needs | 9828625119"
         )
     except Exception as e:
         await update.message.reply_text(f"Error aaya: {str(e)}")
@@ -335,6 +288,8 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    
+    print("Telegram polling started...")
     app.run_polling()
 
 if __name__ == "__main__":
