@@ -1,323 +1,230 @@
 import os
+import io
 import re
-import urllib.parse
-from threading import Thread
-import requests
-from flask import Flask
+import sys
 import telebot
+from flask import Flask, request, jsonify
 from docx import Document
+from docx.shared import Pt, Inches, RGBColor
 from weasyprint import HTML
 
-# ===================================================
-# 1. Telegram Bot Token & Web Server
-# ===================================================
-BOT_TOKEN = "8903776742:AAFGB3cINMZf0Y2ielSLNFgyrAzoNhnO59s"
-bot = telebot.TeleBot(BOT_TOKEN)
+# ==========================================
+# 1. कॉन्फ़िगरेशन और एनवायरनमेंट वेरिएबल्स
+# ==========================================
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://mcq-converter-bot.onrender.com")
 
-web_app = Flask(__name__)
+if not BOT_TOKEN:
+    sys.exit("❌ Error: कृपया Render Environment Variables में 'BOT_TOKEN' सेट करें!")
 
-@web_app.route('/')
-def home():
-    return "Special Education Bot is live and running!"
+# Flask और TeleBot इनिशियलाइज़ेशन
+# threaded=False वेबहुक मोड में Gunicorn के साथ सबसे सुरक्षित रहता है
+bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
+app = Flask(__name__)
 
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    web_app.run(host="0.0.0.0", port=port)
 
-server_thread = Thread(target=run_web, daemon=True)
-server_thread.start()
-
-# ===================================================
-# 2. Translation Engine
-# ===================================================
-trans_cache = {}
-
-def translate_to_english(text):
-    if not text or not text.strip():
-        return ""
+# ==========================================
+# 2. सहायक फ़ंक्शंस (MCQ DOCX और PDF जनरेटर)
+# ==========================================
+def create_mcq_docx(raw_text):
+    """दिए गए टेक्स्ट से फॉर्मेटेड Word (.docx) फाइल बनाता है (RAM में)"""
+    doc = Document()
     
-    clean_text = text.strip()
-    if clean_text in trans_cache:
-        return trans_cache[clean_text]
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
-    }
-
-    try:
-        url = "https://translate.googleapis.com/translate_a/single"
-        params = {
-            "client": "gtx",
-            "sl": "hi",
-            "tl": "en",
-            "dt": "t",
-            "q": clean_text
-        }
-        res = requests.get(url, params=params, headers=headers, timeout=7)
-        if res.status_code == 200:
-            translated = "".join([chunk[0] for chunk in res.json()[0] if chunk and chunk[0]])
-            if translated.strip():
-                trans_cache[clean_text] = translated.strip()
-                return translated.strip()
-    except Exception:
-        pass
-
-    try:
-        url2 = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(clean_text)}&langpair=hi|en"
-        res2 = requests.get(url2, headers=headers, timeout=7)
-        if res2.status_code == 200:
-            tr_mem = res2.json().get("responseData", {}).get("translatedText", "")
-            if tr_mem.strip():
-                trans_cache[clean_text] = tr_mem.strip()
-                return tr_mem.strip()
-    except Exception:
-        pass
-
-    return clean_text
-
-# ===================================================
-# 3. DOCX Parser
-# ===================================================
-def parse_docx(file_path):
-    doc = Document(file_path)
-    full_text = "\n".join([p.text.strip() for p in doc.paragraphs if p.text.strip()])
+    # डॉक्यूमेंट हेडिंग
+    heading = doc.add_heading("MCQ Question Bank", level=1)
+    heading.alignment = 1  # Center alignment
     
-    raw_blocks = re.split(r'\n(?=Question:|\d+\s*/\s*प्रश्न)', full_text)
-    questions = []
+    doc.add_paragraph("Generated automatically via MCQ Converter Bot\n" + "-" * 50)
     
-    for block in raw_blocks:
-        if not re.search(r'(Question:|\d+\s*/\s*प्रश्न)', block):
+    # लाइन-बाय-लाइन जोड़ना
+    for line in raw_text.split('\n'):
+        line_clean = line.strip()
+        if not line_clean:
             continue
+        
+        # प्रश्न या विकल्प को हाईलाइट करना
+        p = doc.add_paragraph()
+        if re.match(r'^(Q\d+|प्रश्न|\d+[\.\)])', line_clean, re.IGNORECASE):
+            run = p.add_run(line_clean)
+            run.bold = True
+            run.font.size = Pt(11.5)
+        elif re.match(r'^(Ans|Answer|उत्तर|Correct):?', line_clean, re.IGNORECASE):
+            run = p.add_run(line_clean)
+            run.bold = True
+            run.font.color.rgb = RGBColor(0, 128, 0)  # हरा रंग
+        else:
+            p.add_run(line_clean)
             
-        q_data = {}
-        
-        q_match = re.search(r'(?:Question:\s*|\d+\s*/\s*प्रश्न\s*\d*\s*)(.*?)(?=\n\([a-d]\)|\nAnswer:)', block, re.DOTALL)
-        q_data['q_hi'] = q_match.group(1).strip() if q_match else ""
-        
-        opts = re.findall(r'\(([a-d])\)\s*(.*?)(?=\n\([a-d]\)|\nAnswer:|\Z)', block, re.DOTALL)
-        q_data['opts'] = {k.lower(): v.strip() for k, v in opts}
-        
-        ans_match = re.search(r'Answer:\s*([a-d])', block, re.IGNORECASE)
-        q_data['ans'] = ans_match.group(1).upper() if ans_match else ""
-        
-        sol_match = re.search(r'Solution:\s*(.*?)(?=\nKey Points:|\nPositive Marks:|\Z)', block, re.DOTALL)
-        q_data['sol'] = sol_match.group(1).strip() if sol_match else ""
-        
-        kp_match = re.search(r'Key Points:\s*(.*?)(?=\nPositive Marks:|\Z)', block, re.DOTALL)
-        q_data['kp'] = kp_match.group(1).strip() if kp_match else ""
-        
-        questions.append(q_data)
-        
-    return questions
+    doc_io = io.BytesIO()
+    doc.save(doc_io)
+    doc_io.seek(0)
+    return doc_io
 
-# ===================================================
-# 4. WeasyPrint Engine (Perfect Hindi Text Shaping)
-# ===================================================
-def generate_pdf(questions, output_pdf):
-    html_content = """<!DOCTYPE html>
-<html lang="hi">
-<head>
-<meta charset="utf-8">
-<style>
-  @page {
-    size: A4 portrait;
-    margin: 10mm 10mm 16mm 10mm;
-    @bottom-center {
-      content: "Special Education Needs | Contact: 9828625119 | Page " counter(page) " of " counter(pages);
-      font-family: 'Noto Sans Devanagari', 'DejaVu Sans', serif;
-      font-size: 10pt;
-      font-weight: bold;
-      color: #333333;
-      border-top: 1px solid #777777;
-      width: 100%;
-      padding-top: 4px;
-    }
-  }
-  body {
-    font-family: 'Noto Sans Devanagari', 'DejaVu Sans', serif;
-    font-size: 11pt;
-    line-height: 1.4;
-    color: #000;
-  }
-  .q-card {
-    page-break-inside: avoid;
-    margin-bottom: 18px;
-    border-bottom: 1px solid #e0e0e0;
-    padding-bottom: 10px;
-  }
-  .header-table {
-    width: 100%;
-    border-bottom: 2px solid #b71c1c;
-    border-left: 5px solid #b71c1c;
-    padding-left: 6px;
-    margin-bottom: 6px;
-  }
-  .q-title {
-    color: #b71c1c;
-    font-size: 11.5pt;
-    font-weight: bold;
-    text-align: left;
-  }
-  .q-marks {
-    text-align: right;
-    font-size: 10pt;
-    color: #555555;
-    font-weight: bold;
-  }
-  .bi-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-bottom: 6px;
-  }
-  .col-hi {
-    width: 50%;
-    vertical-align: top;
-    padding-right: 8px;
-  }
-  .col-en {
-    width: 50%;
-    vertical-align: top;
-    padding-left: 8px;
-    border-left: 1px solid #cccccc;
-  }
-  .q-text {
-    font-weight: bold;
-    margin-bottom: 5px;
-  }
-  .opt-item {
-    margin-bottom: 3px;
-  }
-  .ans-box {
-    background-color: #f1f8e9;
-    border: 1px solid #2e7d32;
-    padding: 4px 8px;
-    color: #2e7d32;
-    font-weight: bold;
-    margin-bottom: 4px;
-    font-size: 10.5pt;
-  }
-  .sol-box {
-    background-color: #f9fbe7;
-    border: 1px solid #cddc39;
-    padding: 5px 8px;
-    margin-bottom: 4px;
-    font-size: 10pt;
-  }
-  .kp-box {
-    background-color: #f5f5f5;
-    border-left: 4px solid #1976d2;
-    padding: 5px 8px;
-    font-size: 9.5pt;
-  }
-  .kp-title {
-    color: #1976d2;
-    font-weight: bold;
-  }
-</style>
-</head>
-<body>
-"""
 
-    for idx, q in enumerate(questions, start=1):
-        en_question = translate_to_english(q['q_hi'])
-        
-        opts_hi_html = ""
-        opts_en_html = ""
-        for k in ['a', 'b', 'c', 'd']:
-            val_hi = q['opts'].get(k, '')
-            val_en = translate_to_english(val_hi)
-            opts_hi_html += f'<div class="opt-item"><b>({k})</b> {val_hi}</div>'
-            opts_en_html += f'<div class="opt-item"><b>({k})</b> {val_en}</div>'
+def create_mcq_pdf(raw_text):
+    """WeasyPrint का उपयोग करके स्वच्छ PDF बनाता है (RAM में)"""
+    html_lines = []
+    for line in raw_text.split('\n'):
+        line_clean = line.strip()
+        if not line_clean:
+            continue
+        if re.match(r'^(Q\d+|प्रश्न|\d+[\.\)])', line_clean, re.IGNORECASE):
+            html_lines.append(f'<div class="question">{line_clean}</div>')
+        elif re.match(r'^(Ans|Answer|उत्तर|Correct):?', line_clean, re.IGNORECASE):
+            html_lines.append(f'<div class="answer">{line_clean}</div>')
+        else:
+            html_lines.append(f'<div class="option">{line_clean}</div>')
+            
+    content_html = "\n".join(html_lines)
+    
+    html_template = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <style>
+            @page {{ size: A4; margin: 20mm; }}
+            body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 13px; line-height: 1.6; color: #333; }}
+            h1 {{ text-align: center; color: #1a365d; border-bottom: 2px solid #e2e8f0; padding-bottom: 8px; }}
+            .question {{ font-weight: bold; margin-top: 15px; margin-bottom: 5px; color: #0f172a; font-size: 14px; }}
+            .option {{ margin-left: 15px; margin-bottom: 3px; color: #334155; }}
+            .answer {{ font-weight: bold; color: #15803d; margin-left: 15px; margin-top: 4px; margin-bottom: 8px; }}
+        </style>
+    </head>
+    <body>
+        <h1>MCQ Question Sheet</h1>
+        {content_html}
+    </body>
+    </html>
+    """
+    
+    pdf_io = io.BytesIO()
+    HTML(string=html_template).write_pdf(pdf_io)
+    pdf_io.seek(0)
+    return pdf_io
 
-        kp_html = ""
-        if q['kp'].strip():
-            formatted_kp = q['kp'].replace('\n', '<br/>')
-            kp_html = f"""
-            <div class="kp-box">
-              <span class="kp-title">Key Points:</span><br/>{formatted_kp}
-            </div>
-            """
 
-        html_content += f"""
-        <div class="q-card">
-          <table class="header-table">
-            <tr>
-              <td class="q-title">Question {idx} / प्रश्न {idx}</td>
-              <td class="q-marks">Marks: +1, -0</td>
-            </tr>
-          </table>
-          <table class="bi-table">
-            <tr>
-              <td class="col-hi">
-                <div class="q-text">{q['q_hi']}</div>
-                {opts_hi_html}
-              </td>
-              <td class="col-en">
-                <div class="q-text">{en_question}</div>
-                {opts_en_html}
-              </td>
-            </tr>
-          </table>
-          <div class="ans-box">Answer: ({q['ans']})</div>
-          <div class="sol-box"><b>Solution:</b> {q['sol']}</div>
-          {kp_html}
-        </div>
-        """
-
-    html_content += "</body></html>"
-    HTML(string=html_content).write_pdf(output_pdf)
-
-# ===================================================
-# 5. Telegram Handlers
-# ===================================================
+# ==========================================
+# 3. टेलीग्राम बॉट हैंडलर्स
+# ==========================================
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(
-        message,
-        "नमस्ते! अपनी .docx फ़ाइल अपलोड करें।\n"
-        "बॉट हिंदी का सटीक English Translation करके दो-कॉलम (Bilingual) लेआउट में बिना किसी फॉन्ट त्रुटि के PDF बना देगा।"
+    msg = (
+        "👋 *MCQ कनवर्टर बॉट में आपका स्वागत है!*\n\n"
+        "मुझे अपने प्रश्न (MCQs) भेजें। आप:\n"
+        "1. सीधे यहाँ टेक्स्ट पेस्ट कर सकते हैं।\n"
+        "2. या कोई टेक्स्ट फ़ाइल (.txt) भेज सकते हैं।\n\n"
+        "मैं आपको तुरंत उसकी फॉर्मेटेड **Word (.docx)** और **PDF** बनाकर भेजूंगा।"
     )
+    bot.reply_to(message, msg, parse_mode="Markdown")
 
-@bot.message_handler(content_types=['document'])
-def handle_docs(message):
-    file_name = message.document.file_name
-    if not file_name.endswith('.docx'):
-        bot.reply_to(message, "कृपया सिर्फ़ .docx फ़ाइल भेजें।")
+
+@bot.message_handler(commands=['ping'])
+def send_ping(message):
+    bot.reply_to(message, "🏓 Pong! बॉट Webhook पर सक्रिय है।")
+
+
+# टेक्स्ट प्राप्त होने पर DOCX और PDF बनाकर भेजना
+@bot.message_handler(content_types=['text'])
+def handle_text_mcqs(message):
+    user_text = message.text.strip()
+    
+    if len(user_text) < 10:
+        bot.reply_to(message, "⚠️ कृपया कम से कम एक पूरा प्रश्न या विकल्प भेजें।")
         return
 
-    status_msg = bot.reply_to(message, "PDF तैयार की जा रही है, कृपया थोड़ा इंतज़ार करें...")
+    status_msg = bot.reply_to(message, "⏳ आपकी फाइल्स तैयार हो रही हैं...")
     
-    file_info = bot.get_file(message.document.file_id)
-    downloaded_file = bot.download_file(file_info.file_path)
-    
-    input_path = f"temp_{file_name}"
-    output_pdf = input_path.replace(".docx", "_Bilingual_Book.pdf")
-    
-    with open(input_path, 'wb') as f:
-        f.write(downloaded_file)
-        
     try:
-        questions = parse_docx(input_path)
-        generate_pdf(questions, output_pdf)
+        # DOCX बनाएं और भेजें
+        docx_file = create_mcq_docx(user_text)
+        docx_file.name = "MCQ_Document.docx"
+        bot.send_document(message.chat.id, docx_file, caption="📄 आपकी Word (.docx) फ़ाइल")
         
-        with open(output_pdf, 'rb') as pdf_file:
-            bot.send_document(
-                message.chat.id,
-                pdf_file,
-                caption="आपकी शुद्ध Bilingual PDF तैयार है!\nSpecial Education Needs"
-            )
+        # PDF बनाएं और भेजें
+        pdf_file = create_mcq_pdf(user_text)
+        pdf_file.name = "MCQ_Document.pdf"
+        bot.send_document(message.chat.id, pdf_file, caption="📕 आपकी PDF फ़ाइल")
+        
+        bot.delete_message(message.chat.id, status_msg.message_id)
     except Exception as e:
-        bot.reply_to(message, f"त्रुटि: {str(e)}")
-    finally:
-        for f in [input_path, output_pdf]:
-            if os.path.exists(f):
-                os.remove(f)
-        try:
-            bot.delete_message(message.chat.id, status_msg.message_id)
-        except Exception:
-            pass
+        bot.edit_message_text(f"❌ प्रोसेस करने में त्रुटि आई: {str(e)}", message.chat.id, status_msg.message_id)
+
+
+# TXT फ़ाइल प्राप्त होने पर
+@bot.message_handler(content_types=['document'])
+def handle_file_upload(message):
+    try:
+        file_name = message.document.file_name or ""
+        
+        if not file_name.endswith('.txt'):
+            bot.reply_to(message, "⚠️ कृपया केवल `.txt` फाइल या सीधे टेक्स्ट मैसेज भेजें।")
+            return
+            
+        status_msg = bot.reply_to(message, f"⏳ `{file_name}` डाउनलोड और कन्वर्ट हो रही है...", parse_mode="Markdown")
+        
+        file_info = bot.get_file(message.document.file_id)
+        downloaded = bot.download_file(file_info.file_path)
+        text_content = downloaded.decode('utf-8', errors='ignore')
+        
+        # DOCX और PDF बनाएं
+        docx_file = create_mcq_docx(text_content)
+        docx_file.name = f"{os.path.splitext(file_name)[0]}.docx"
+        bot.send_document(message.chat.id, docx_file, caption="📄 आपकी Word फ़ाइल")
+        
+        pdf_file = create_mcq_pdf(text_content)
+        pdf_file.name = f"{os.path.splitext(file_name)[0]}.pdf"
+        bot.send_document(message.chat.id, pdf_file, caption="📕 आपकी PDF फ़ाइल")
+        
+        bot.delete_message(message.chat.id, status_msg.message_id)
+    except Exception as e:
+        bot.reply_to(message, f"❌ एरर: {str(e)}")
+
+
+# ==========================================
+# 4. Flask Webhook और एंडपॉइंट्स
+# ==========================================
+@app.route(f"/{BOT_TOKEN}", methods=['POST'])
+def process_webhook():
+    """Telegram इस रूट पर नए अपडेट्स पोस्ट करता है"""
+    if request.headers.get('content-type') == 'application/json':
+        json_data = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_data)
+        bot.process_new_updates([update])
+        return 'OK', 200
+    return 'Forbidden', 403
+
+
+@app.route('/', methods=['GET', 'HEAD'])
+@app.route('/ping', methods=['GET'])
+def health_check():
+    """Render हेल्थ चेक और UptimeRobot पिंग के लिए"""
+    return jsonify({
+        "status": "online",
+        "service": "mcq-converter-bot",
+        "mode": "webhook"
+    }), 200
+
+
+# ==========================================
+# 5. ऑटोमैटिक Webhook रजिस्ट्रेशन (सर्वर स्टार्ट)
+# ==========================================
+def init_webhook():
+    full_webhook_url = f"{WEBHOOK_URL.rstrip('/')}/{BOT_TOKEN}"
+    try:
+        current_info = bot.get_webhook_info()
+        if current_info.url != full_webhook_url:
+            bot.remove_webhook()
+            bot.set_webhook(url=full_webhook_url)
+            print(f"[+] Telegram Webhook successfully configured to: {full_webhook_url}")
+        else:
+            print("[+] Telegram Webhook already up-to-date.")
+    except Exception as ex:
+        print(f"[-] Webhook setup failed: {ex}")
+
+# जब Gunicorn या डायरेक्ट रनर इस फाइल को लोड करेगा, वेबहुक ऑटो-सेट हो जाएगा
+init_webhook()
 
 if __name__ == '__main__':
-    print("Bot live ho gaya hai...")
-    bot.infinity_polling(skip_pending=True)
-        
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host="0.0.0.0", port=port)
