@@ -2,14 +2,12 @@ import os
 import io
 import re
 import sys
-import time
 import requests
-import urllib.parse
 import threading
 import telebot
-from flask import Flask, request, jsonify
+from flask import Flask, request
 
-# Documents & Presentation Libraries
+# Document aur Presentation Libraries
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -24,35 +22,45 @@ from pptx.dml.color import RGBColor as PptRGBColor
 from weasyprint import HTML
 
 # ==========================================
-# 1. कॉन्फ़िगरेशन
+# 1. Configuration
 # ==========================================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://mcq-converter-bot.onrender.com")
 
 if not BOT_TOKEN:
-    sys.exit("❌ Error: कृपया Render Environment Variables में 'BOT_TOKEN' सेट करें!")
+    sys.exit("Error: Render Environment Variables me 'BOT_TOKEN' set karein!")
 
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 app = Flask(__name__)
 
 
 # ==========================================
-# 2. सुरक्षित क्लाउड ट्रांसलेटर (MyMemory Engine)
+# 2. Reliable Cloud Translator (Direct API)
 # ==========================================
 def translate_to_en(text):
-    """Render IP पर बिना ब्लॉक हुए 100% काम करने वाला अनुवादक"""
+    """Render Cloud IP par bina block hue Hindi ko English me convert karta hai"""
     if not text or not text.strip():
         return ""
     try:
         clean_text = text.strip()
-        encoded = urllib.parse.quote(clean_text[:480])
-        url = f"https://api.mymemory.translated.net/get?q={encoded}&langpair=hi|en"
-        resp = requests.get(url, timeout=6)
+        url = "https://translate.googleapis.com/translate_a/single"
+        params = {
+            "client": "gtx",
+            "sl": "hi",
+            "tl": "en",
+            "dt": "t",
+            "q": clean_text
+        }
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        }
+        resp = requests.get(url, params=params, headers=headers, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
-            translated = data.get("responseData", {}).get("translatedText", "")
-            if translated and not translated.startswith("MYMEMORY WARNING"):
-                return translated
+            parts = [seg[0] for seg in data[0] if seg and seg[0]]
+            res = "".join(parts).strip()
+            if res:
+                return res
         return clean_text
     except Exception as e:
         print(f"Translation Error: {e}")
@@ -60,24 +68,24 @@ def translate_to_en(text):
 
 
 # ==========================================
-# 3. फ़ाइल एक्सट्रैक्शन और पार्सिंग
+# 3. Extraction aur Parsing
 # ==========================================
 def extract_text_from_docx(file_bytes):
     doc = Document(io.BytesIO(file_bytes))
-    full_text = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+    lines = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
     for table in doc.tables:
         for row in table.rows:
-            row_data = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-            if row_data:
-                full_text.append(" | ".join(row_data))
-    return "\n".join(full_text)
+            row_items = [c.text.strip() for c in row.cells if c.text.strip()]
+            if row_items:
+                lines.append(" | ".join(row_items))
+    return "\n".join(lines)
 
 
 def parse_mcqs_bilingual(text):
-    raw_blocks = re.split(r'\n(?=Question:)', text.strip(), flags=re.IGNORECASE)
+    blocks = re.split(r'\n(?=Question:)', text.strip(), flags=re.IGNORECASE)
     parsed = []
 
-    for block in raw_blocks:
+    for block in blocks:
         if not block.strip():
             continue
 
@@ -88,19 +96,20 @@ def parse_mcqs_bilingual(text):
         pos_match = re.search(r'Positive Marks:\s*(\d+)', block, re.IGNORECASE)
         neg_match = re.search(r'Negative Marks:\s*(\d+)', block, re.IGNORECASE)
 
-        raw_options = re.findall(r'\(([a-d])\)\s*([^(\n]+)', block, re.IGNORECASE)
+        raw_opts = re.findall(r'\(([a-d])\)\s*([^(\n]+)', block, re.IGNORECASE)
 
         if q_match:
             q_hi = q_match.group(1).strip()
-            # अंग्रेजी अनुवाद
+            # English Translation of Question
             q_en = translate_to_en(q_hi)
 
             opts_hi = []
             opts_en = []
-            for lbl, txt in raw_options:
-                opt_txt = txt.strip()
-                opts_hi.append((lbl, opt_txt))
-                opts_en.append((lbl, translate_to_en(opt_txt)))
+            for lbl, opt_val in raw_opts:
+                val_clean = opt_val.strip()
+                opts_hi.append((lbl, val_clean))
+                # English Translation of Option
+                opts_en.append((lbl, translate_to_en(val_clean)))
 
             parsed.append({
                 "q_hi": q_hi,
@@ -117,22 +126,21 @@ def parse_mcqs_bilingual(text):
 
 
 # ==========================================
-# 4. Bilingual PDF Generator (Exact 2-Column)
+# 4. Exact 2-Column PDF Generator
 # ==========================================
 def generate_pdf(mcqs, title="MCQ Test"):
-    cards_html = []
+    cards = []
 
     for i, item in enumerate(mcqs, 1):
-        opts_hi_html = "".join([f'<div class="opt"><b>({lbl})</b> {txt}</div>' for lbl, txt in item['opts_hi']])
-        opts_en_html = "".join([f'<div class="opt"><b>({lbl})</b> {txt}</div>' for lbl, txt in item['opts_en']])
+        hi_options = "".join([f'<div class="opt"><b>({l})</b> {t}</div>' for l, t in item['opts_hi']])
+        en_options = "".join([f'<div class="opt"><b>({l})</b> {t}</div>' for l, t in item['opts_en']])
 
-        kp_bullets = ""
+        kp_html = ""
         if item['key_points']:
-            lines = [ln.strip('• ').strip() for ln in item['key_points'].split('\n') if ln.strip()]
-            bullet_items = " • ".join(lines)
-            kp_bullets = f'<div class="key-points-box"><b>Key Points:</b> • {bullet_items}</div>'
+            bullets = [ln.strip('• ').strip() for ln in item['key_points'].split('\n') if ln.strip()]
+            kp_html = f'<div class="key-points-box"><b>Key Points:</b> • {" • ".join(bullets)}</div>'
 
-        cards_html.append(f"""
+        cards.append(f"""
         <div class="question-container">
             <div class="q-header">
                 <div class="q-title"><span class="red-bar"></span> Question {i} / प्रश्न {i}</div>
@@ -142,25 +150,23 @@ def generate_pdf(mcqs, title="MCQ Test"):
             <div class="columns-grid">
                 <div class="col">
                     <div class="question-text">{item['q_hi']}</div>
-                    <div class="options-group">{opts_hi_html}</div>
+                    <div class="options-group">{hi_options}</div>
                 </div>
                 <div class="col">
                     <div class="question-text">{item['q_en']}</div>
-                    <div class="options-group">{opts_en_html}</div>
+                    <div class="options-group">{en_options}</div>
                 </div>
             </div>
 
             <div class="solution-card">
                 <div class="ans-line"><b>Answer: ({item['answer']})</b></div>
                 <div class="sol-text"><b>Solution:</b> {item['solution']}</div>
-                {kp_bullets}
+                {kp_html}
             </div>
         </div>
         """)
 
-    body_content = "\n".join(cards_html)
-
-    html_template = f"""
+    full_html = f"""
     <!DOCTYPE html>
     <html>
     <head>
@@ -259,101 +265,103 @@ def generate_pdf(mcqs, title="MCQ Test"):
         </style>
     </head>
     <body>
-        {body_content}
+        {"".join(cards)}
     </body>
     </html>
     """
 
     out = io.BytesIO()
-    HTML(string=html_template).write_pdf(out)
+    HTML(string=full_html).write_pdf(out)
     out.seek(0)
     return out
 
 
 # ==========================================
-# 5. Bilingual DOCX Generator (Book Table)
+# 5. Bilingual DOCX Generator (Book)
 # ==========================================
 def generate_docx(mcqs, title="MCQ Book"):
     doc = Document()
 
-    for section in doc.sections:
-        section.top_margin = Inches(0.6)
-        section.bottom_margin = Inches(0.6)
-        section.left_margin = Inches(0.6)
-        section.right_margin = Inches(0.6)
+    for sec in doc.sections:
+        sec.top_margin = Inches(0.6)
+        sec.bottom_margin = Inches(0.6)
+        sec.left_margin = Inches(0.6)
+        sec.right_margin = Inches(0.6)
 
     title_p = doc.add_heading(title, level=1)
     title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     doc.add_paragraph()
 
     for i, item in enumerate(mcqs, 1):
-        # Header Table
-        h_table = doc.add_table(rows=1, cols=2)
-        h_table.alignment = WD_TABLE_ALIGNMENT.CENTER
-        h_table.autofit = False
-        h_table.columns[0].width = Inches(5.0)
-        h_table.columns[1].width = Inches(2.2)
+        # Header Box
+        h_tab = doc.add_table(rows=1, cols=2)
+        h_tab.alignment = WD_TABLE_ALIGNMENT.CENTER
+        h_tab.autofit = False
+        h_tab.columns[0].width = Inches(5.0)
+        h_tab.columns[1].width = Inches(2.2)
 
         shd1 = parse_xml(r'<w:shd {} w:fill="FCF6F4"/>'.format(nsdecls('w')))
-        h_table.rows[0].cells[0]._tc.get_or_add_tcPr().append(shd1)
+        h_tab.rows[0].cells[0]._tc.get_or_add_tcPr().append(shd1)
         shd2 = parse_xml(r'<w:shd {} w:fill="FCF6F4"/>'.format(nsdecls('w')))
-        h_table.rows[0].cells[1]._tc.get_or_add_tcPr().append(shd2)
+        h_tab.rows[0].cells[1]._tc.get_or_add_tcPr().append(shd2)
 
-        cell_l = h_table.rows[0].cells[0].paragraphs[0]
-        r_bar = cell_l.add_run("▌ ")
-        r_bar.font.color.rgb = RGBColor(168, 36, 20)
-        r_title = cell_l.add_run(f"Question {i} / प्रश्न {i}")
-        r_title.bold = True
-        r_title.font.color.rgb = RGBColor(139, 30, 15)
-        r_title.font.size = Pt(10.5)
+        c_l = h_tab.rows[0].cells[0].paragraphs[0]
+        rb = c_l.add_run("▌ ")
+        rb.font.color.rgb = RGBColor(168, 36, 20)
+        rt = c_l.add_run(f"Question {i} / प्रश्न {i}")
+        rt.bold = True
+        rt.font.color.rgb = RGBColor(139, 30, 15)
+        rt.font.size = Pt(10.5)
 
-        cell_r = h_table.rows[0].cells[1].paragraphs[0]
-        cell_r.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        r_marks = cell_r.add_run(f"Marks: +{item['pos_marks']}, -{item['neg_marks']}")
-        r_marks.font.size = Pt(9.5)
-        r_marks.font.color.rgb = RGBColor(85, 85, 85)
+        c_r = h_tab.rows[0].cells[1].paragraphs[0]
+        c_r.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        rm = c_r.add_run(f"Marks: +{item['pos_marks']}, -{item['neg_marks']}")
+        rm.font.size = Pt(9.5)
+        rm.font.color.rgb = RGBColor(85, 85, 85)
 
-        # 2-Column Table (Hindi Left, English Right)
-        c_table = doc.add_table(rows=1, cols=2)
-        c_table.alignment = WD_TABLE_ALIGNMENT.CENTER
-        c_table.columns[0].width = Inches(3.6)
-        c_table.columns[1].width = Inches(3.6)
+        # 2-Column Table
+        q_tab = doc.add_table(rows=1, cols=2)
+        q_tab.alignment = WD_TABLE_ALIGNMENT.CENTER
+        q_tab.columns[0].width = Inches(3.6)
+        q_tab.columns[1].width = Inches(3.6)
 
-        p_left = c_table.rows[0].cells[0].paragraphs[0]
-        q_run_l = p_left.add_run(f"{item['q_hi']}\n")
-        q_run_l.bold = True
-        q_run_l.font.size = Pt(10)
-        for lbl, txt in item['opts_hi']:
-            p_left.add_run(f"({lbl}) {txt}\n").font.size = Pt(9.5)
+        # Left: Hindi
+        pl = q_tab.rows[0].cells[0].paragraphs[0]
+        ql = pl.add_run(f"{item['q_hi']}\n")
+        ql.bold = True
+        ql.font.size = Pt(10)
+        for l, t in item['opts_hi']:
+            pl.add_run(f"({l}) {t}\n").font.size = Pt(9.5)
 
-        p_right = c_table.rows[0].cells[1].paragraphs[0]
-        q_run_r = p_right.add_run(f"{item['q_en']}\n")
-        q_run_r.bold = True
-        q_run_r.font.size = Pt(10)
-        for lbl, txt in item['opts_en']:
-            p_right.add_run(f"({lbl}) {txt}\n").font.size = Pt(9.5)
+        # Right: English
+        pr = q_tab.rows[0].cells[1].paragraphs[0]
+        qr = pr.add_run(f"{item['q_en']}\n")
+        qr.bold = True
+        qr.font.size = Pt(10)
+        for l, t in item['opts_en']:
+            pr.add_run(f"({l}) {t}\n").font.size = Pt(9.5)
 
-        # Solution Table
-        sol_table = doc.add_table(rows=1, cols=1)
-        sol_table.alignment = WD_TABLE_ALIGNMENT.CENTER
-        sol_table.columns[0].width = Inches(7.2)
+        # Solution Box
+        s_tab = doc.add_table(rows=1, cols=1)
+        s_tab.alignment = WD_TABLE_ALIGNMENT.CENTER
+        s_tab.columns[0].width = Inches(7.2)
 
-        shd_sol = parse_xml(r'<w:shd {} w:fill="F0F9FF"/>'.format(nsdecls('w')))
-        sol_table.rows[0].cells[0]._tc.get_or_add_tcPr().append(shd_sol)
+        shd_s = parse_xml(r'<w:shd {} w:fill="F0F9FF"/>'.format(nsdecls('w')))
+        s_tab.rows[0].cells[0]._tc.get_or_add_tcPr().append(shd_s)
 
-        sp = sol_table.rows[0].cells[0].paragraphs[0]
-        ans_r = sp.add_run(f"Answer: ({item['answer']})\n")
-        ans_r.bold = True
-        ans_r.font.color.rgb = RGBColor(3, 105, 161)
-        ans_r.font.size = Pt(10)
+        sp = s_tab.rows[0].cells[0].paragraphs[0]
+        ans_run = sp.add_run(f"Answer: ({item['answer']})\n")
+        ans_run.bold = True
+        ans_run.font.color.rgb = RGBColor(3, 105, 161)
+        ans_run.font.size = Pt(10)
 
-        sol_label = sp.add_run("Solution: ")
-        sol_label.bold = True
+        sl = sp.add_run("Solution: ")
+        sl.bold = True
         sp.add_run(f"{item['solution']}\n").font.size = Pt(9.5)
 
         if item['key_points']:
-            kp_label = sp.add_run("Key Points: ")
-            kp_label.bold = True
+            kl = sp.add_run("Key Points: ")
+            kl.bold = True
             lines = [ln.strip('• ').strip() for ln in item['key_points'].split('\n') if ln.strip()]
             sp.add_run(" • " + " • ".join(lines)).font.size = Pt(9)
 
@@ -372,80 +380,79 @@ def generate_pptx(mcqs, title="Class Presentation"):
     prs = Presentation()
     prs.slide_width = PptInches(13.33)
     prs.slide_height = PptInches(7.5)
-    blank_layout = prs.slide_layouts[6]
+    layout = prs.slide_layouts[6]
 
     for i, item in enumerate(mcqs, 1):
-        slide = prs.slides.add_slide(blank_layout)
+        slide = prs.slides.add_slide(layout)
 
-        # Top Header
-        header_box = slide.shapes.add_textbox(PptInches(0.6), PptInches(0.3), PptInches(12.13), PptInches(0.5))
-        tf_h = header_box.text_frame
-        p_h = tf_h.paragraphs[0]
+        # Header
+        h_box = slide.shapes.add_textbox(PptInches(0.6), PptInches(0.3), PptInches(12.13), PptInches(0.5))
+        p_h = h_box.text_frame.paragraphs[0]
         r1 = p_h.add_run()
         r1.text = f"▌ Question {i} / प्रश्न {i}"
         r1.font.bold = True
         r1.font.size = PptPt(16)
         r1.font.color.rgb = PptRGBColor(168, 36, 20)
 
-        # Left Column (Hindi)
-        box_hi = slide.shapes.add_textbox(PptInches(0.6), PptInches(0.9), PptInches(5.9), PptInches(3.8))
-        tf_hi = box_hi.text_frame
+        # Hindi (Left)
+        b_hi = slide.shapes.add_textbox(PptInches(0.6), PptInches(0.9), PptInches(5.9), PptInches(3.8))
+        tf_hi = b_hi.text_frame
         tf_hi.word_wrap = True
-        p_q_hi = tf_hi.paragraphs[0]
-        p_q_hi.text = item['q_hi']
-        p_q_hi.font.bold = True
-        p_q_hi.font.size = PptPt(15)
-        p_q_hi.font.color.rgb = PptRGBColor(15, 23, 42)
-        p_q_hi.space_after = PptPt(8)
+        pq_hi = tf_hi.paragraphs[0]
+        pq_hi.text = item['q_hi']
+        pq_hi.font.bold = True
+        pq_hi.font.size = PptPt(15)
+        pq_hi.font.color.rgb = PptRGBColor(15, 23, 42)
+        pq_hi.space_after = PptPt(8)
 
-        for lbl, txt in item['opts_hi']:
-            p_o = tf_hi.add_paragraph()
-            p_o.text = f"({lbl}) {txt}"
-            p_o.font.size = PptPt(13)
-            p_o.font.color.rgb = PptRGBColor(30, 41, 59)
-            p_o.space_after = PptPt(4)
+        for l, t in item['opts_hi']:
+            po = tf_hi.add_paragraph()
+            po.text = f"({l}) {t}"
+            po.font.size = PptPt(13)
+            po.font.color.rgb = PptRGBColor(30, 41, 59)
+            po.space_after = PptPt(4)
 
-        # Right Column (English)
-        box_en = slide.shapes.add_textbox(PptInches(6.8), PptInches(0.9), PptInches(5.9), PptInches(3.8))
-        tf_en = box_en.text_frame
+        # English (Right)
+        b_en = slide.shapes.add_textbox(PptInches(6.8), PptInches(0.9), PptInches(5.9), PptInches(3.8))
+        tf_en = b_en.text_frame
         tf_en.word_wrap = True
-        p_q_en = tf_en.paragraphs[0]
-        p_q_en.text = item['q_en']
-        p_q_en.font.bold = True
-        p_q_en.font.size = PptPt(15)
-        p_q_en.font.color.rgb = PptRGBColor(15, 23, 42)
-        p_q_en.space_after = PptPt(8)
+        pq_en = tf_en.paragraphs[0]
+        pq_en.text = item['q_en']
+        pq_en.font.bold = True
+        pq_en.font.size = PptPt(15)
+        pq_en.font.color.rgb = PptRGBColor(15, 23, 42)
+        pq_en.space_after = PptPt(8)
 
-        for lbl, txt in item['opts_en']:
-            p_o = tf_en.add_paragraph()
-            p_o.text = f"({lbl}) {txt}"
-            p_o.font.size = PptPt(13)
-            p_o.font.color.rgb = PptRGBColor(30, 41, 59)
-            p_o.space_after = PptPt(4)
+        for l, t in item['opts_en']:
+            po = tf_en.add_paragraph()
+            po.text = f"({l}) {t}"
+            po.font.size = PptPt(13)
+            po.font.color.rgb = PptRGBColor(30, 41, 59)
+            po.space_after = PptPt(4)
 
-        # Bottom Solution
-        sol_box = slide.shapes.add_textbox(PptInches(0.6), PptInches(4.9), PptInches(12.13), PptInches(2.2))
-        tf_s = sol_box.text_frame
+        # Solution Box
+        s_box = slide.shapes.add_textbox(PptInches(0.6), PptInches(4.9), PptInches(12.13), PptInches(2.2))
+        tf_s = s_box.text_frame
         tf_s.word_wrap = True
 
-        p_ans = tf_s.paragraphs[0]
-        p_ans.text = f"✔ Answer: ({item['answer']})"
-        p_ans.font.bold = True
-        p_ans.font.size = PptPt(15)
-        p_ans.font.color.rgb = PptRGBColor(3, 105, 161)
+        pa = tf_s.paragraphs[0]
+        pa.text = f"✔ Answer: ({item['answer']})"
+        pa.font.bold = True
+        pa.font.size = PptPt(15)
+        pa.font.color.rgb = PptRGBColor(3, 105, 161)
 
         if item['solution']:
-            p_sol = tf_s.add_paragraph()
-            p_sol.text = f"Solution: {item['solution']}"
-            p_sol.font.size = PptPt(12)
-            p_sol.font.color.rgb = PptRGBColor(71, 85, 105)
+            ps = tf_s.add_paragraph()
+            ps.text = f"Solution: {item['solution']}"
+            ps.font.size = PptPt(12)
+            ps.font.color.rgb = PptRGBColor(71, 85, 105)
 
         if item['key_points']:
-            p_kp = tf_s.add_paragraph()
+            pk = tf_s.add_paragraph()
             lines = [ln.strip('• ').strip() for ln in item['key_points'].split('\n') if ln.strip()]
-            p_kp.text = f"Key Points: • " + " • ".join(lines)
-            p_kp.font.size = PptPt(11)
-            p_kp.font.color.rgb = PptRGBColor(100, 116, 139)
+            pk.text = "Key Points: • " + " • ".join(lines)
+            pk.font.size = PptPt(11)
+            pk.font.color.rgb = PptRGBColor(100, 116, 139)
 
     out = io.BytesIO()
     prs.save(out)
@@ -454,104 +461,101 @@ def generate_pptx(mcqs, title="Class Presentation"):
 
 
 # ==========================================
-# 7. Background Task Runner (ताकि डुप्लिकेट रिक्वेस्ट न आए)
+# 7. Background Async Processor
 # ==========================================
-def process_and_send_files(chat_id, file_id, file_name, ext):
+def process_and_send(chat_id, file_id, file_name, ext):
     try:
-        status_msg = bot.send_message(chat_id, f"⏳ `{file_name}` का हिंदी से अंग्रेजी में अनुवाद और फॉर्मेटिंग शुरू हो गई है...", parse_mode="Markdown")
+        msg = bot.send_message(chat_id, f"⏳ `{file_name}` ka Hindi se English me accurate translation shuru ho gaya hai...", parse_mode="Markdown")
 
-        file_info = bot.get_file(file_id)
-        raw_bytes = bot.download_file(file_info.file_path)
+        f_info = bot.get_file(file_id)
+        raw = bot.download_file(f_info.file_path)
 
-        text = extract_text_from_docx(raw_bytes) if ext == '.docx' else raw_bytes.decode('utf-8', errors='ignore')
+        text = extract_text_from_docx(raw) if ext == '.docx' else raw.decode('utf-8', errors='ignore')
         mcqs = parse_mcqs_bilingual(text)
 
         if not mcqs:
-            bot.edit_message_text("❌ फ़ाइल में कोई प्रश्न नहीं मिला।", chat_id, status_msg.message_id)
+            bot.edit_message_text("❌ File me koi question nahi mila.", chat_id, msg.message_id)
             return
 
-        base_name = os.path.splitext(file_name)[0]
+        base = os.path.splitext(file_name)[0]
 
         # 1. PPTX
-        ppt_data = generate_pptx(mcqs, title=base_name)
-        ppt_data.name = f"{base_name}_Class.pptx"
-        bot.send_document(chat_id, ppt_data, caption="🖥️ *PowerPoint (Bilingual)* - क्लास में पढ़ाने के लिए", parse_mode="Markdown")
+        ppt = generate_pptx(mcqs, title=base)
+        ppt.name = f"{base}_Class.pptx"
+        bot.send_document(chat_id, ppt, caption="🖥️ *PowerPoint (Bilingual)* - Class lene ke liye", parse_mode="Markdown")
 
         # 2. PDF
-        pdf_data = generate_pdf(mcqs, title=base_name)
-        pdf_data.name = f"{base_name}_Share.pdf"
-        bot.send_document(chat_id, pdf_data, caption="📕 *PDF Document (Bilingual)* - शेयर करने के लिए", parse_mode="Markdown")
+        pdf = generate_pdf(mcqs, title=base)
+        pdf.name = f"{base}_Share.pdf"
+        bot.send_document(chat_id, pdf, caption="📕 *PDF Document (Bilingual)* - Share karne ke liye", parse_mode="Markdown")
 
         # 3. DOCX
-        docx_data = generate_docx(mcqs, title=base_name)
-        docx_data.name = f"{base_name}_Book.docx"
-        bot.send_document(chat_id, docx_data, caption="📘 *Word Document (Bilingual)* - बुक / प्रिंटिंग के लिए", parse_mode="Markdown")
+        docx = generate_docx(mcqs, title=base)
+        docx.name = f"{base}_Book.docx"
+        bot.send_document(chat_id, docx, caption="📘 *Word Document (Bilingual)* - Book / Print ke liye", parse_mode="Markdown")
 
-        bot.delete_message(chat_id, status_msg.message_id)
+        bot.delete_message(chat_id, msg.message_id)
 
     except Exception as e:
-        bot.send_message(chat_id, f"❌ प्रोसेसिंग में एरर: {str(e)}")
+        bot.send_message(chat_id, f"❌ Error: {str(e)}")
 
 
 # ==========================================
-# 8. टेलीग्राम बॉट और Webhook रूट्स
+# 8. Webhook & Handlers
 # ==========================================
 @bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
+def start_cmd(message):
     bot.reply_to(
         message,
-        "👋 *MCQ All-in-One Bilingual Generator*\n\n"
-        "अपनी `.docx` या `.txt` फ़ाइल भेजें। बॉट बिना रुके 3 फ़ाइलें देगा:\n"
+        "👋 *MCQ Bilingual Converter Bot Ready Hai!*\n\n"
+        "Apni `.docx` ya `.txt` file bhejein. Bot 3 files banakar bhejega:\n"
         "1. 🖥️ **PPTX** (Widescreen Class Presentation)\n"
-        "2. 📕 **PDF** (Bilingual 2-Column Exact Notes)\n"
-        "3. 📘 **DOCX** (Bilingual Book Format)",
+        "2. 📕 **PDF** (2-Column Bilingual Format)\n"
+        "3. 📘 **DOCX** (Printable Book Format)",
         parse_mode="Markdown"
     )
 
 
 @bot.message_handler(content_types=['document'])
-def handle_incoming_doc(message):
-    file_name = message.document.file_name or "MCQs.docx"
-    ext = os.path.splitext(file_name)[1].lower()
+def handle_doc(message):
+    fname = message.document.file_name or "MCQs.docx"
+    ext = os.path.splitext(fname)[1].lower()
 
     if ext not in ['.docx', '.txt']:
-        bot.reply_to(message, "⚠️ कृपया केवल `.docx` या `.txt` फ़ाइल भेजें।")
+        bot.reply_to(message, "⚠️ Keval `.docx` ya `.txt` file bhejein.")
         return
 
-    # बैकग्राउंड थ्रेड में प्रोसेस करें ताकि टेलीग्राम को तुरंत रिस्पॉन्स मिल सके (डुप्लिकेट 6 फाइलें रुकेंगी)
+    # Background execution taaki duplicate 6 files na banein
     threading.Thread(
-        target=process_and_send_files,
-        args=(message.chat.id, message.document.file_id, file_name, ext)
+        target=process_and_send,
+        args=(message.chat.id, message.document.file_id, fname, ext)
     ).start()
 
 
 @app.route(f"/{BOT_TOKEN}", methods=['POST'])
-def process_webhook():
+def webhook():
     if request.headers.get('content-type') == 'application/json':
-        # तुरंत Telegram को 200 OK दे दें
-        json_data = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_data)
-        bot.process_new_updates([update])
+        data = request.get_data().decode('utf-8')
+        bot.process_new_updates([telebot.types.Update.de_json(data)])
         return 'OK', 200
     return 'Forbidden', 403
 
 
 @app.route('/', methods=['GET', 'HEAD'])
 def index():
-    return "Bot is Live with Background Multithread Processing!", 200
+    return "Bot is Live with Direct Web Translation!", 200
 
 
 def init_webhook():
-    full_url = f"{WEBHOOK_URL.rstrip('/')}/{BOT_TOKEN}"
+    url = f"{WEBHOOK_URL.rstrip('/')}/{BOT_TOKEN}"
     try:
-        if bot.get_webhook_info().url != full_url:
+        if bot.get_webhook_info().url != url:
             bot.remove_webhook()
-            bot.set_webhook(url=full_url)
-    except Exception as err:
-        print(f"Webhook error: {err}")
+            bot.set_webhook(url=url)
+    except Exception as e:
+        print(f"Webhook setup warning: {e}")
 
 init_webhook()
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=int(os.environ.get('PORT', 10000)))
-        
