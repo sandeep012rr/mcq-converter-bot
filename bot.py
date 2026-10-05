@@ -2,13 +2,14 @@ import os
 import io
 import re
 import sys
+import time
+import requests
+import urllib.parse
+import threading
 import telebot
 from flask import Flask, request, jsonify
 
-# Deep Translator
-from deep_translator import GoogleTranslator
-
-# Document Libraries
+# Documents & Presentation Libraries
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -23,36 +24,43 @@ from pptx.dml.color import RGBColor as PptRGBColor
 from weasyprint import HTML
 
 # ==========================================
-# 1. Configuration
+# 1. कॉन्फ़िगरेशन
 # ==========================================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://mcq-converter-bot.onrender.com")
 
 if not BOT_TOKEN:
-    sys.exit("Error: Render Environment Variables mein BOT_TOKEN set karein!")
+    sys.exit("❌ Error: कृपया Render Environment Variables में 'BOT_TOKEN' सेट करें!")
 
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 app = Flask(__name__)
 
-translator = GoogleTranslator(source='hi', target='en')
-
 
 # ==========================================
-# 2. Translation Helper
+# 2. सुरक्षित क्लाउड ट्रांसलेटर (MyMemory Engine)
 # ==========================================
 def translate_to_en(text):
-    """Hindi text ko English mein translate karta hai, error aane par original text return karta hai"""
+    """Render IP पर बिना ब्लॉक हुए 100% काम करने वाला अनुवादक"""
     if not text or not text.strip():
         return ""
     try:
-        # Agar already English mein hai ya mix hai
-        return translator.translate(text)
-    except Exception:
+        clean_text = text.strip()
+        encoded = urllib.parse.quote(clean_text[:480])
+        url = f"https://api.mymemory.translated.net/get?q={encoded}&langpair=hi|en"
+        resp = requests.get(url, timeout=6)
+        if resp.status_code == 200:
+            data = resp.json()
+            translated = data.get("responseData", {}).get("translatedText", "")
+            if translated and not translated.startswith("MYMEMORY WARNING"):
+                return translated
+        return clean_text
+    except Exception as e:
+        print(f"Translation Error: {e}")
         return text
 
 
 # ==========================================
-# 3. Parsing & Extraction
+# 3. फ़ाइल एक्सट्रैक्शन और पार्सिंग
 # ==========================================
 def extract_text_from_docx(file_bytes):
     doc = Document(io.BytesIO(file_bytes))
@@ -65,7 +73,7 @@ def extract_text_from_docx(file_bytes):
     return "\n".join(full_text)
 
 
-def parse_mcqs(text):
+def parse_mcqs_bilingual(text):
     raw_blocks = re.split(r'\n(?=Question:)', text.strip(), flags=re.IGNORECASE)
     parsed = []
 
@@ -84,10 +92,9 @@ def parse_mcqs(text):
 
         if q_match:
             q_hi = q_match.group(1).strip()
-            # Automatic English translation
+            # अंग्रेजी अनुवाद
             q_en = translate_to_en(q_hi)
 
-            # Options translation
             opts_hi = []
             opts_en = []
             for lbl, txt in raw_options:
@@ -110,15 +117,13 @@ def parse_mcqs(text):
 
 
 # ==========================================
-# 4. Bilingual PDF Generator (Exact 2-Column Format)
+# 4. Bilingual PDF Generator (Exact 2-Column)
 # ==========================================
 def generate_pdf(mcqs, title="MCQ Test"):
     cards_html = []
 
     for i, item in enumerate(mcqs, 1):
-        # Hindi Options HTML
         opts_hi_html = "".join([f'<div class="opt"><b>({lbl})</b> {txt}</div>' for lbl, txt in item['opts_hi']])
-        # English Options HTML
         opts_en_html = "".join([f'<div class="opt"><b>({lbl})</b> {txt}</div>' for lbl, txt in item['opts_en']])
 
         kp_bullets = ""
@@ -266,7 +271,7 @@ def generate_pdf(mcqs, title="MCQ Test"):
 
 
 # ==========================================
-# 5. Bilingual DOCX Generator (Book Format)
+# 5. Bilingual DOCX Generator (Book Table)
 # ==========================================
 def generate_docx(mcqs, title="MCQ Book"):
     doc = Document()
@@ -282,7 +287,7 @@ def generate_docx(mcqs, title="MCQ Book"):
     doc.add_paragraph()
 
     for i, item in enumerate(mcqs, 1):
-        # 1. Header Table
+        # Header Table
         h_table = doc.add_table(rows=1, cols=2)
         h_table.alignment = WD_TABLE_ALIGNMENT.CENTER
         h_table.autofit = False
@@ -308,13 +313,12 @@ def generate_docx(mcqs, title="MCQ Book"):
         r_marks.font.size = Pt(9.5)
         r_marks.font.color.rgb = RGBColor(85, 85, 85)
 
-        # 2. 2-Column Table (Hindi Left, English Right)
+        # 2-Column Table (Hindi Left, English Right)
         c_table = doc.add_table(rows=1, cols=2)
         c_table.alignment = WD_TABLE_ALIGNMENT.CENTER
         c_table.columns[0].width = Inches(3.6)
         c_table.columns[1].width = Inches(3.6)
 
-        # Left Column (Hindi)
         p_left = c_table.rows[0].cells[0].paragraphs[0]
         q_run_l = p_left.add_run(f"{item['q_hi']}\n")
         q_run_l.bold = True
@@ -322,7 +326,6 @@ def generate_docx(mcqs, title="MCQ Book"):
         for lbl, txt in item['opts_hi']:
             p_left.add_run(f"({lbl}) {txt}\n").font.size = Pt(9.5)
 
-        # Right Column (English)
         p_right = c_table.rows[0].cells[1].paragraphs[0]
         q_run_r = p_right.add_run(f"{item['q_en']}\n")
         q_run_r.bold = True
@@ -330,7 +333,7 @@ def generate_docx(mcqs, title="MCQ Book"):
         for lbl, txt in item['opts_en']:
             p_right.add_run(f"({lbl}) {txt}\n").font.size = Pt(9.5)
 
-        # 3. Solution Table
+        # Solution Table
         sol_table = doc.add_table(rows=1, cols=1)
         sol_table.alignment = WD_TABLE_ALIGNMENT.CENTER
         sol_table.columns[0].width = Inches(7.2)
@@ -374,7 +377,7 @@ def generate_pptx(mcqs, title="Class Presentation"):
     for i, item in enumerate(mcqs, 1):
         slide = prs.slides.add_slide(blank_layout)
 
-        # 1. Header
+        # Top Header
         header_box = slide.shapes.add_textbox(PptInches(0.6), PptInches(0.3), PptInches(12.13), PptInches(0.5))
         tf_h = header_box.text_frame
         p_h = tf_h.paragraphs[0]
@@ -384,7 +387,7 @@ def generate_pptx(mcqs, title="Class Presentation"):
         r1.font.size = PptPt(16)
         r1.font.color.rgb = PptRGBColor(168, 36, 20)
 
-        # 2. Left Column (Hindi Question + Options)
+        # Left Column (Hindi)
         box_hi = slide.shapes.add_textbox(PptInches(0.6), PptInches(0.9), PptInches(5.9), PptInches(3.8))
         tf_hi = box_hi.text_frame
         tf_hi.word_wrap = True
@@ -402,7 +405,7 @@ def generate_pptx(mcqs, title="Class Presentation"):
             p_o.font.color.rgb = PptRGBColor(30, 41, 59)
             p_o.space_after = PptPt(4)
 
-        # 3. Right Column (English Question + Options)
+        # Right Column (English)
         box_en = slide.shapes.add_textbox(PptInches(6.8), PptInches(0.9), PptInches(5.9), PptInches(3.8))
         tf_en = box_en.text_frame
         tf_en.word_wrap = True
@@ -420,7 +423,7 @@ def generate_pptx(mcqs, title="Class Presentation"):
             p_o.font.color.rgb = PptRGBColor(30, 41, 59)
             p_o.space_after = PptPt(4)
 
-        # 4. Bottom Solution Box
+        # Bottom Solution
         sol_box = slide.shapes.add_textbox(PptInches(0.6), PptInches(4.9), PptInches(12.13), PptInches(2.2))
         tf_s = sol_box.text_frame
         tf_s.word_wrap = True
@@ -451,80 +454,91 @@ def generate_pptx(mcqs, title="Class Presentation"):
 
 
 # ==========================================
-# 7. Telegram Bot Handlers
+# 7. Background Task Runner (ताकि डुप्लिकेट रिक्वेस्ट न आए)
+# ==========================================
+def process_and_send_files(chat_id, file_id, file_name, ext):
+    try:
+        status_msg = bot.send_message(chat_id, f"⏳ `{file_name}` का हिंदी से अंग्रेजी में अनुवाद और फॉर्मेटिंग शुरू हो गई है...", parse_mode="Markdown")
+
+        file_info = bot.get_file(file_id)
+        raw_bytes = bot.download_file(file_info.file_path)
+
+        text = extract_text_from_docx(raw_bytes) if ext == '.docx' else raw_bytes.decode('utf-8', errors='ignore')
+        mcqs = parse_mcqs_bilingual(text)
+
+        if not mcqs:
+            bot.edit_message_text("❌ फ़ाइल में कोई प्रश्न नहीं मिला।", chat_id, status_msg.message_id)
+            return
+
+        base_name = os.path.splitext(file_name)[0]
+
+        # 1. PPTX
+        ppt_data = generate_pptx(mcqs, title=base_name)
+        ppt_data.name = f"{base_name}_Class.pptx"
+        bot.send_document(chat_id, ppt_data, caption="🖥️ *PowerPoint (Bilingual)* - क्लास में पढ़ाने के लिए", parse_mode="Markdown")
+
+        # 2. PDF
+        pdf_data = generate_pdf(mcqs, title=base_name)
+        pdf_data.name = f"{base_name}_Share.pdf"
+        bot.send_document(chat_id, pdf_data, caption="📕 *PDF Document (Bilingual)* - शेयर करने के लिए", parse_mode="Markdown")
+
+        # 3. DOCX
+        docx_data = generate_docx(mcqs, title=base_name)
+        docx_data.name = f"{base_name}_Book.docx"
+        bot.send_document(chat_id, docx_data, caption="📘 *Word Document (Bilingual)* - बुक / प्रिंटिंग के लिए", parse_mode="Markdown")
+
+        bot.delete_message(chat_id, status_msg.message_id)
+
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ प्रोसेसिंग में एरर: {str(e)}")
+
+
+# ==========================================
+# 8. टेलीग्राम बॉट और Webhook रूट्स
 # ==========================================
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     bot.reply_to(
         message,
-        "👋 *MCQ Bilingual Generator Bot*\n\n"
-        "Apni MCQ `.docx` ya `.txt` file bhejein. Bot automatically Hindi ko English mein translate karega aur exact format mein 3 files banakar bhejega:\n"
-        "1. 🖥️ **PPTX** - Class presentation (Side-by-side Hindi/English)\n"
-        "2. 📕 **PDF** - Student notes (Exact 2-column image layout)\n"
-        "3. 📘 **DOCX** - Book printing (Bilingual table)",
+        "👋 *MCQ All-in-One Bilingual Generator*\n\n"
+        "अपनी `.docx` या `.txt` फ़ाइल भेजें। बॉट बिना रुके 3 फ़ाइलें देगा:\n"
+        "1. 🖥️ **PPTX** (Widescreen Class Presentation)\n"
+        "2. 📕 **PDF** (Bilingual 2-Column Exact Notes)\n"
+        "3. 📘 **DOCX** (Bilingual Book Format)",
         parse_mode="Markdown"
     )
 
 
 @bot.message_handler(content_types=['document'])
-def handle_docs(message):
+def handle_incoming_doc(message):
     file_name = message.document.file_name or "MCQs.docx"
     ext = os.path.splitext(file_name)[1].lower()
 
     if ext not in ['.docx', '.txt']:
-        bot.reply_to(message, "⚠️ Keval `.docx` ya `.txt` file bhejein.")
+        bot.reply_to(message, "⚠️ कृपया केवल `.docx` या `.txt` फ़ाइल भेजें।")
         return
 
-    wait_msg = bot.reply_to(message, f"⏳ `{file_name}` translate aur format ho rahi hai... Kripya intezar karein.", parse_mode="Markdown")
-
-    try:
-        file_info = bot.get_file(message.document.file_id)
-        raw_bytes = bot.download_file(file_info.file_path)
-
-        text = extract_text_from_docx(raw_bytes) if ext == '.docx' else raw_bytes.decode('utf-8', errors='ignore')
-        mcqs = parse_mcqs(text)
-
-        if not mcqs:
-            bot.edit_message_text("❌ File mein koi prashna nahi mila.", message.chat.id, wait_msg.message_id)
-            return
-
-        base_name = os.path.splitext(file_name)[0]
-
-        # 1. PPTX send karein
-        ppt_data = generate_pptx(mcqs, title=base_name)
-        ppt_data.name = f"{base_name}_Class.pptx"
-        bot.send_document(message.chat.id, ppt_data, caption="🖥️ *PowerPoint (Bilingual)* - Class lene ke liye", parse_mode="Markdown")
-
-        # 2. PDF send karein
-        pdf_data = generate_pdf(mcqs, title=base_name)
-        pdf_data.name = f"{base_name}_Share.pdf"
-        bot.send_document(message.chat.id, pdf_data, caption="📕 *PDF Document (Bilingual)* - Share karne ke liye", parse_mode="Markdown")
-
-        # 3. DOCX send karein
-        docx_data = generate_docx(mcqs, title=base_name)
-        docx_data.name = f"{base_name}_Book.docx"
-        bot.send_document(message.chat.id, docx_data, caption="📘 *Word Document (Bilingual)* - Book banane ke liye", parse_mode="Markdown")
-
-        bot.delete_message(message.chat.id, wait_msg.message_id)
-
-    except Exception as e:
-        bot.edit_message_text(f"❌ Process error: {str(e)}", message.chat.id, wait_msg.message_id)
+    # बैकग्राउंड थ्रेड में प्रोसेस करें ताकि टेलीग्राम को तुरंत रिस्पॉन्स मिल सके (डुप्लिकेट 6 फाइलें रुकेंगी)
+    threading.Thread(
+        target=process_and_send_files,
+        args=(message.chat.id, message.document.file_id, file_name, ext)
+    ).start()
 
 
-# ==========================================
-# 8. Webhook Setup
-# ==========================================
 @app.route(f"/{BOT_TOKEN}", methods=['POST'])
 def process_webhook():
     if request.headers.get('content-type') == 'application/json':
-        bot.process_new_updates([telebot.types.Update.de_json(request.get_data().decode('utf-8'))])
+        # तुरंत Telegram को 200 OK दे दें
+        json_data = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_data)
+        bot.process_new_updates([update])
         return 'OK', 200
     return 'Forbidden', 403
 
 
 @app.route('/', methods=['GET', 'HEAD'])
 def index():
-    return "Bot is Live with Bilingual Translators!", 200
+    return "Bot is Live with Background Multithread Processing!", 200
 
 
 def init_webhook():
@@ -540,3 +554,4 @@ init_webhook()
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=int(os.environ.get('PORT', 10000)))
+        
